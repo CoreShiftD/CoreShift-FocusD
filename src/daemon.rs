@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use std::collections::HashMap;
 use coreshift_core::reactor::{Reactor, Token};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
@@ -30,7 +34,7 @@ impl Daemon {
         let mut cache = UidCache::new(&config.cache_dir);
         cache.load_or_refresh(&config.packages_xml_path);
 
-        let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone());
+        let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), true);
 
         let terminal_apps_path = format!("{}/terminal_apps.conf", config.cache_dir);
         let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);
@@ -127,12 +131,15 @@ impl Daemon {
                 let old_fp = self.resolver.cache.fingerprint.clone();
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
 
+                let mut dynamic_changed = false;
                 // Only re-resolve dynamic defaults if fingerprint changed
                 if self.resolver.cache.fingerprint != old_fp {
                     self.blocklist_defaults = Blocklist::resolve_defaults();
+                    dynamic_changed = true;
                 }
 
-                self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone());
+                // Only persist if dynamic defaults actually changed to avoid inotify loop on manual config edits
+                self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone(), dynamic_changed);
                 self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
 

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -19,7 +23,7 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
 }
 
 impl Blocklist {
-    pub fn load_or_create<P: AsRef<Path>>(path: P, dynamic_defaults: BTreeSet<String>) -> Self {
+    pub fn load_or_create<P: AsRef<Path>>(path: P, dynamic_defaults: BTreeSet<String>, persist: bool) -> Self {
         let mut packages = BTreeSet::new();
 
         let static_defaults = [
@@ -77,23 +81,15 @@ impl Blocklist {
             });
         }
 
-        // Sync back to file to ensure it's up to date with defaults
-        let mut sync_content = String::from("# Blocklist configuration (one package per line, use - to unblock defaults)\n\n# Static Defaults\n");
-        for &pkg in &static_defaults {
-            sync_content.push_str(&format!("{}\n", pkg));
+        // Only write back if the file doesn't exist or if requested (e.g. dynamic defaults changed)
+        // to prevent inotify infinite loops while fulfilling user's request to have the list in the file.
+        if !path.as_ref().exists() || persist {
+            let mut final_content = String::from("# Blocklist configuration\n# Use '-' prefix to unblock a package\n\n");
+            for pkg in &packages {
+                final_content.push_str(&format!("{}\n", pkg));
+            }
+            let _ = fs::write(path, final_content);
         }
-
-        // We only write user additions and removals back, but we could also write the whole resolved list
-        // However, the prompt says "I want the static and dynamic list inside blocklist.conf"
-        // Let's write everything that is currently in 'packages' that isn't a user addition/removal
-        // actually let's just write the current state of 'packages' but mark them.
-        // Re-read user's request: "I want the static and dynamic list inside blocklist.conf and for it to phrase it unless packages.xml fingerprint invalidated"
-
-        let mut final_content = String::from("# Blocklist configuration\n# Use '-' prefix to unblock a package\n\n");
-        for pkg in &packages {
-            final_content.push_str(&format!("{}\n", pkg));
-        }
-        let _ = fs::write(path, final_content);
 
         Self { packages }
     }
@@ -115,9 +111,10 @@ impl Blocklist {
         let mut defaults = BTreeSet::new();
 
         // Resolve Launcher
-        if let Ok(output) = run_command("/system/bin/cmd", &["activity", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
-            if let Some(package) = parse_package_from_brief(&output.stdout) {
-                defaults.insert(package);
+        if let Ok(output) = run_command("/system/bin/cmd", &["package", "resolve-activity", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
+            let s = String::from_utf8_lossy(&output.stdout);
+            if let Some(package) = s.lines().find_map(|line| line.trim().strip_prefix("packageName=")) {
+                defaults.insert(package.to_string());
             }
         }
 
@@ -140,16 +137,6 @@ impl Blocklist {
 
         defaults
     }
-}
-
-fn parse_package_from_brief(stdout: &[u8]) -> Option<String> {
-    let s = String::from_utf8_lossy(stdout);
-    for word in s.split_whitespace() {
-        if let Some(pkg) = word.strip_prefix("package=") {
-            return Some(pkg.to_string());
-        }
-    }
-    None
 }
 
 fn parse_package_from_component(stdout: &[u8]) -> Option<String> {

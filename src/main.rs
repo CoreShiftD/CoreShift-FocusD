@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use std::env;
 use std::fs;
 use std::io::{self, Write};
@@ -92,18 +96,34 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve defaults once before forking to supervisor
     let blocklist_defaults = Blocklist::resolve_defaults();
 
+    // Double fork to ensure complete detachment
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        return Err("fork supervisor failed".into());
+        return Err("fork failed".into());
     }
     if pid > 0 {
-        // Parent returns immediately
+        // Parent CLI waits for middle child to ensure detachment
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0); }
         return Ok(());
     }
 
-    // Supervisor process
+    // Middle child process
     unsafe {
         libc::setsid();
+    }
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        std::process::exit(1);
+    }
+    if pid > 0 {
+        // Middle child exits, grandchild (supervisor) is adopted by init
+        std::process::exit(0);
+    }
+
+    // Grandchild process (Supervisor)
+    unsafe {
         // Redirect standard I/O to /dev/null for supervisor
         if let Ok(dev_null) = fs::OpenOptions::new().read(true).write(true).open("/dev/null") {
             let fd = std::os::unix::io::AsRawFd::as_raw_fd(&dev_null);

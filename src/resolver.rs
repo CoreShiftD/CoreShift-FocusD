@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 use std::fs;
 use coreshift_core::proc::read_proc_cmdline;
 use coreshift_core::uid::proc_stat;
@@ -26,6 +30,9 @@ impl Resolver {
     }
 
     pub fn resolve(&mut self) -> Option<(String, bool)> {
+        // Clear PID cache for each resolution cycle to handle PID recycling
+        self.pid_cache.clear();
+
         // 1. Get initial candidates from top-app CPUSet (Cgroup v1)
         let v1_pids = self.get_v1_top_app_pids("/dev/cpuset/top-app/cgroup.procs");
         if v1_pids.is_empty() {
