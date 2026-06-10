@@ -12,15 +12,15 @@ pub struct Blocklist {
 fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
     let mut argv = vec![cmd.to_string()];
     argv.extend(args.iter().map(|s| s.to_string()));
-    SpawnOptions::builder(argv, SpawnBackend::Fork)
+    SpawnOptions::builder(argv, SpawnBackend::PosixSpawn)
         .capture_stdout()
         .build()?
         .run()
 }
 
 impl Blocklist {
-    pub fn load<P: AsRef<Path>>(path: P) -> Self {
-        let mut packages = Self::resolve_defaults();
+    pub fn load<P: AsRef<Path>>(path: P, defaults: BTreeSet<String>) -> Self {
+        let mut packages = defaults;
 
         // Static defaults
         let static_defaults = [
@@ -78,21 +78,21 @@ impl Blocklist {
         let mut defaults = BTreeSet::new();
 
         // Resolve Launcher
-        if let Ok(output) = run_command("/system/bin/cmd", &["activity", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
+        if let Ok(output) = run_command("/system/bin/cmd", &["package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
             if let Some(package) = parse_package_from_brief(&output.stdout) {
                 defaults.insert(package);
             }
         }
 
         // Resolve Keyboard (IME)
-        if let Ok(output) = run_command("/system/bin/settings", &["get", "secure", "default_input_method"]) {
+        if let Ok(output) = run_command("/system/bin/cmd", &["settings", "get", "secure", "default_input_method"]) {
             if let Some(package) = parse_package_from_component(&output.stdout) {
                 defaults.insert(package);
             }
         }
 
         // Resolve Accessibility Services
-        if let Ok(output) = run_command("/system/bin/settings", &["get", "secure", "enabled_accessibility_services"]) {
+        if let Ok(output) = run_command("/system/bin/cmd", &["settings", "get", "secure", "enabled_accessibility_services"]) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for component in stdout.split(':') {
                 if let Some(package) = parse_package_from_component_str(component) {

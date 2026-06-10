@@ -8,11 +8,18 @@ pub struct Resolver {
     pub cache: UidCache,
     pub blocklist: Blocklist,
     pid_cache: std::collections::HashMap<i32, String>,
+    cgroup_v2_roots: Vec<std::path::PathBuf>,
 }
 
 impl Resolver {
     pub fn new(cache: UidCache, blocklist: Blocklist) -> Self {
-        Self { cache, blocklist, pid_cache: std::collections::HashMap::new() }
+        let cgroup_v2_roots = Self::discover_cgroup_v2_roots();
+        Self {
+            cache,
+            blocklist,
+            pid_cache: std::collections::HashMap::new(),
+            cgroup_v2_roots,
+        }
     }
 
     pub fn resolve(&mut self) -> Option<(String, bool)> {
@@ -22,13 +29,11 @@ impl Resolver {
             return None;
         }
 
-        let v2_roots = self.discover_cgroup_v2_roots();
-
         // 2. Resolve identities and apply initial filters (Cgroup v2 + Blocklist)
         let mut filtered = Vec::new();
         for pid in v1_pids {
             // PID-specific Cgroup v2 population check
-            if !self.is_pid_in_populated_v2_group(pid, &v2_roots) {
+            if !self.is_pid_in_populated_v2_group(pid) {
                 continue;
             }
 
@@ -98,7 +103,7 @@ impl Resolver {
         pids
     }
 
-    fn is_pid_in_populated_v2_group(&self, pid: i32, roots: &[std::path::PathBuf]) -> bool {
+    fn is_pid_in_populated_v2_group(&self, pid: i32) -> bool {
         let cgroup_path = format!("/proc/{}/cgroup", pid);
         let Ok(content) = fs::read_to_string(cgroup_path) else {
             return false;
@@ -109,7 +114,7 @@ impl Resolver {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.len() >= 3 && parts[0] == "0" && parts[1] == "" {
                 let v2_rel_path = parts[2].trim_start_matches('/');
-                for root in roots {
+                for root in &self.cgroup_v2_roots {
                     let full_v2_path = root.join(v2_rel_path).join("cgroup.events");
                     if let Ok(events_content) = fs::read_to_string(full_v2_path) {
                         return events_content.contains("populated 1");
@@ -134,6 +139,11 @@ impl Resolver {
                     } else if oom == min_oom && pid > best_pid {
                         best_pid = pid;
                     }
+
+                    // Short-circuit: 0 or less is definitive on Android
+                    if min_oom <= 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -149,7 +159,7 @@ impl Resolver {
         None
     }
 
-    pub fn discover_cgroup_v2_roots(&self) -> Vec<std::path::PathBuf> {
+    fn discover_cgroup_v2_roots() -> Vec<std::path::PathBuf> {
         let mut roots = Vec::new();
         if let Ok(content) = fs::read_to_string("/proc/mounts") {
             for line in content.lines() {
@@ -167,5 +177,5 @@ impl Resolver {
 }
 
 fn is_terminal_app(package: &str) -> bool {
-    matches!(package, "com.termux" | "com.termius.client" | "com.server.auditor.ssh.client")
+    matches!(package, "com.termux" | "com.termius.client" | "com.server.auditor.ssh.client") || package.starts_with("bin.mt")
 }

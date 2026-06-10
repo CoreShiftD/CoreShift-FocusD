@@ -25,12 +25,13 @@ pub struct UidCache {
     pub mapping: HashMap<u32, String>,
     pub fingerprint: Option<Fingerprint>,
     cache_file: PathBuf,
+    miss_counts: HashMap<u32, u8>,
 }
 
 fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
     let mut argv = vec![cmd.to_string()];
     argv.extend(args.iter().map(|s| s.to_string()));
-    SpawnOptions::builder(argv, SpawnBackend::Fork)
+    SpawnOptions::builder(argv, SpawnBackend::PosixSpawn)
         .capture_stdout()
         .build()?
         .run()
@@ -43,6 +44,7 @@ impl UidCache {
             mapping: HashMap::new(),
             fingerprint: None,
             cache_file,
+            miss_counts: HashMap::new(),
         }
     }
 
@@ -76,10 +78,26 @@ impl UidCache {
         if let Some(pkg) = self.mapping.get(&uid) {
             return Some(pkg.clone());
         }
+
+        // Check miss counter
+        if let Some(&count) = self.miss_counts.get(&uid) {
+            if count >= 3 {
+                return None;
+            }
+        }
+
         // Missing UID: refresh and try again
         self.refresh();
         self.save();
-        self.mapping.get(&uid).cloned()
+
+        if let Some(pkg) = self.mapping.get(&uid) {
+            self.miss_counts.remove(&uid);
+            Some(pkg.clone())
+        } else {
+            let count = self.miss_counts.entry(uid).or_insert(0);
+            *count += 1;
+            None
+        }
     }
 
     fn save(&self) {

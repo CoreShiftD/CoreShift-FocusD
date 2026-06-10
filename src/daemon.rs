@@ -15,6 +15,7 @@ pub struct Daemon {
     watchers: HashMap<Token, UnixStreamFd>,
     last_v1_payload: String,
     last_package: Option<String>,
+    blocklist_defaults: std::collections::BTreeSet<String>,
 }
 
 impl Daemon {
@@ -22,7 +23,8 @@ impl Daemon {
         let mut cache = UidCache::new(&config.cache_dir);
         cache.load_or_refresh(&config.packages_xml_path);
 
-        let blocklist = Blocklist::load(&config.blocklist_path);
+        let blocklist_defaults = Blocklist::resolve_defaults();
+        let blocklist = Blocklist::load(&config.blocklist_path, blocklist_defaults.clone());
 
         let resolver = Resolver::new(cache, blocklist);
         Self {
@@ -31,6 +33,7 @@ impl Daemon {
             watchers: HashMap::new(),
             last_v1_payload: String::new(),
             last_package: None,
+            blocklist_defaults,
         }
     }
 
@@ -45,11 +48,10 @@ impl Daemon {
         // Setup Inotify
         let inotify_fd = inotify::init()?;
         let inotify_token = reactor.add(&inotify_fd, true, false)?;
-        let _ = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK);
-        let _ = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK);
 
-        // Watch for foreground changes
-        let _ = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK);
+        let wd_packages = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
+        let wd_blocklist = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
+        let wd_foreground = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
 
         let mut events = Vec::new();
         loop {
@@ -81,10 +83,13 @@ impl Daemon {
                     }
                 } else if ev.token == inotify_token {
                     let in_events = inotify::read_events(&inotify_fd)?;
-                    for _ in in_events {
-                        // In reality we should check WDs, but for now we refresh and notify on any event
-                        refresh_needed = true;
-                        notify_needed = true;
+                    for in_ev in in_events {
+                        if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist {
+                            refresh_needed = true;
+                        }
+                        if in_ev.wd == wd_foreground {
+                            notify_needed = true;
+                        }
                     }
                 } else if self.watchers.contains_key(&ev.token) {
                     if ev.error || ev.readable {
@@ -98,7 +103,7 @@ impl Daemon {
 
             if refresh_needed {
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
-                self.resolver.blocklist = Blocklist::load(&self.config.blocklist_path);
+                self.resolver.blocklist = Blocklist::load(&self.config.blocklist_path, self.blocklist_defaults.clone());
             }
 
             if notify_needed {

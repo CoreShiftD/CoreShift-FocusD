@@ -17,7 +17,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match args[1].as_str() {
         "daemon" => {
             let mut daemon = Daemon::new(config);
-            daemon.run()?;
+            if let Err(e) = daemon.run() {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         "status" => {
             send_command(&config.socket_name, "status")?;
