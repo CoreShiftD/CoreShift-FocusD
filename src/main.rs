@@ -102,7 +102,16 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Supervisor process
-    unsafe { libc::setsid(); }
+    unsafe {
+        libc::setsid();
+        // Redirect standard I/O to /dev/null for supervisor
+        if let Ok(dev_null) = fs::OpenOptions::new().read(true).write(true).open("/dev/null") {
+            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&dev_null);
+            libc::dup2(fd, 0);
+            libc::dup2(fd, 1);
+            libc::dup2(fd, 2);
+        }
+    }
 
     let mut crash_count = 0;
     let mut last_crash_window = Instant::now();
@@ -116,6 +125,16 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
         if daemon_pid == 0 {
             // Daemon process
+            unsafe {
+                // Ensure daemon dies if supervisor dies
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+
+                // Close inherited file descriptors (except stdio)
+                for i in 3..1024 {
+                    libc::close(i);
+                }
+            }
+
             let mut daemon = Daemon::new_with_defaults(config.clone(), blocklist_defaults.clone());
             if let Err(_) = daemon.run() {
                 std::process::exit(1);

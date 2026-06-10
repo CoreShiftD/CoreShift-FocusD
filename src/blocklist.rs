@@ -19,15 +19,9 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
 }
 
 impl Blocklist {
-    pub fn load_or_create<P: AsRef<Path>>(path: P, defaults: BTreeSet<String>) -> Self {
-        let mut packages = defaults;
+    pub fn load_or_create<P: AsRef<Path>>(path: P, dynamic_defaults: BTreeSet<String>) -> Self {
+        let mut packages = BTreeSet::new();
 
-        if !path.as_ref().exists() {
-            let _ = fs::create_dir_all(path.as_ref().parent().unwrap());
-            let _ = fs::write(path.as_ref(), "# Blocklist configuration (one package per line, use - to unblock defaults)\n");
-        }
-
-        // Static defaults
         let static_defaults = [
             "com.google.android.as*",
             "com.google.android.gms*",
@@ -38,31 +32,69 @@ impl Blocklist {
             "com.google.android.permissioncontroller",
         ];
 
-        for pkg in static_defaults {
-            packages.insert(pkg.to_string());
-        }
+        let mut user_additions = BTreeSet::new();
+        let mut user_removals = BTreeSet::new();
 
-        if let Ok(content) = fs::read_to_string(path) {
+        if let Ok(content) = fs::read_to_string(path.as_ref()) {
             for line in content.lines() {
                 let line = line.trim();
                 if line.starts_with('#') || line.is_empty() {
                     continue;
                 }
-
                 if let Some(to_remove) = line.strip_prefix('-') {
-                    let to_remove = to_remove.trim();
-                    packages.retain(|pkg| {
-                        if to_remove.ends_with('*') {
-                            !pkg.starts_with(&to_remove[..to_remove.len() - 1])
-                        } else {
-                            pkg != to_remove
-                        }
-                    });
+                    user_removals.insert(to_remove.trim().to_string());
                 } else {
-                    packages.insert(line.to_string());
+                    user_additions.insert(line.to_string());
                 }
             }
+        } else {
+            let _ = fs::create_dir_all(path.as_ref().parent().unwrap());
         }
+
+        // 1. Add static defaults
+        for &pkg in &static_defaults {
+            packages.insert(pkg.to_string());
+        }
+
+        // 2. Add dynamic defaults (if any were provided/resolved)
+        for pkg in dynamic_defaults {
+            packages.insert(pkg);
+        }
+
+        // 3. Add user additions
+        for pkg in user_additions {
+            packages.insert(pkg);
+        }
+
+        // 4. Apply user removals
+        for to_remove in user_removals {
+            packages.retain(|pkg| {
+                if to_remove.ends_with('*') {
+                    !pkg.starts_with(&to_remove[..to_remove.len() - 1])
+                } else {
+                    pkg != &to_remove
+                }
+            });
+        }
+
+        // Sync back to file to ensure it's up to date with defaults
+        let mut sync_content = String::from("# Blocklist configuration (one package per line, use - to unblock defaults)\n\n# Static Defaults\n");
+        for &pkg in &static_defaults {
+            sync_content.push_str(&format!("{}\n", pkg));
+        }
+
+        // We only write user additions and removals back, but we could also write the whole resolved list
+        // However, the prompt says "I want the static and dynamic list inside blocklist.conf"
+        // Let's write everything that is currently in 'packages' that isn't a user addition/removal
+        // actually let's just write the current state of 'packages' but mark them.
+        // Re-read user's request: "I want the static and dynamic list inside blocklist.conf and for it to phrase it unless packages.xml fingerprint invalidated"
+
+        let mut final_content = String::from("# Blocklist configuration\n# Use '-' prefix to unblock a package\n\n");
+        for pkg in &packages {
+            final_content.push_str(&format!("{}\n", pkg));
+        }
+        let _ = fs::write(path, final_content);
+
         Self { packages }
     }
 
@@ -83,7 +115,7 @@ impl Blocklist {
         let mut defaults = BTreeSet::new();
 
         // Resolve Launcher
-        if let Ok(output) = run_command("/system/bin/cmd", &["package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
+        if let Ok(output) = run_command("/system/bin/cmd", &["activity", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
             if let Some(package) = parse_package_from_brief(&output.stdout) {
                 defaults.insert(package);
             }

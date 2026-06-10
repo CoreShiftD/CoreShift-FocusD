@@ -124,7 +124,14 @@ impl Daemon {
             }
 
             if refresh_needed {
+                let old_fp = self.resolver.cache.fingerprint.clone();
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
+
+                // Only re-resolve dynamic defaults if fingerprint changed
+                if self.resolver.cache.fingerprint != old_fp {
+                    self.blocklist_defaults = Blocklist::resolve_defaults();
+                }
+
                 self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone());
                 self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
@@ -140,8 +147,9 @@ impl Daemon {
             }
 
             if notify_needed && !self.watchers.is_empty() {
-                if let Some((pkg, _)) = self.resolver.resolve() {
-                    if Some(&pkg) != self.last_package.as_ref() {
+                let current_package = self.resolver.resolve().map(|r| r.0);
+                if current_package != self.last_package {
+                    if let Some(pkg) = current_package.as_ref() {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
                         for (token, stream) in &self.watchers {
@@ -154,8 +162,8 @@ impl Daemon {
                                 let _ = reactor.del(&stream.fd);
                             }
                         }
-                        self.last_package = Some(pkg);
                     }
+                    self.last_package = current_package;
                 }
             }
         }
