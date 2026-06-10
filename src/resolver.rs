@@ -30,9 +30,6 @@ impl Resolver {
     }
 
     pub fn resolve(&mut self) -> Option<(String, bool)> {
-        // Clear PID cache for each resolution cycle to handle PID recycling
-        self.pid_cache.clear();
-
         // 1. Get initial candidates from top-app CPUSet (Cgroup v1)
         let v1_pids = self.get_v1_top_app_pids("/dev/cpuset/top-app/cgroup.procs");
         if v1_pids.is_empty() {

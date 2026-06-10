@@ -101,6 +101,7 @@ impl Daemon {
                             Command::Watch => {
                                 let current = self.resolver.resolve().map(|r| r.0);
                                 self.last_package = current.clone();
+                                self.last_broadcasted = current.clone();
                                 let display = current.as_deref().unwrap_or("unknown");
                                 let response = format!("{}\n", display);
                                 let _ = stream.fd.write_slice(response.as_bytes());
@@ -127,7 +128,7 @@ impl Daemon {
                         }
                     }
                 } else if self.watchers.contains_key(&ev.token) {
-                    if ev.error || ev.readable {
+                    if ev.error || ev.readable || ev.hangup {
                         // Client closed or sent something else, remove it
                         if let Some(stream) = self.watchers.remove(&ev.token) {
                             let _ = reactor.del(&stream.fd);
