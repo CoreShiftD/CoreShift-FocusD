@@ -7,7 +7,7 @@ CoreShift Foreground is a lightweight service designed to provide event-driven f
 ### 1. Daemon (`src/daemon.rs`)
 The background service that monitors system triggers and maintains the foreground state.
 - **Reactor**: Uses `coreshift-core`'s epoll-based reactor.
-- **Inotify**: Monitors `top-app` cpuset, Cgroup v2 events, `packages.xml`, and the blocklist.
+- **Inotify**: Monitors `top-app` cpuset, `packages.xml`, and the blocklist.
 - **IPC**: Manages the abstract Unix socket `@coreshift`.
 
 ### 2. Resolver (`src/resolver.rs`)

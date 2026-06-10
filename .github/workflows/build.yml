@@ -26,6 +26,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Setup Latest SDKManager
+      run: |
+        mkdir -p $ANDROID_HOME/cmdline-tools
+        wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
+        unzip cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+        mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+        echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
     - name: Set NDK Version
       id: ndk_setup
       run: |

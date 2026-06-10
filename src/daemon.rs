@@ -50,13 +50,6 @@ impl Daemon {
 
         // Watch for foreground changes
         let _ = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK);
-        // Discover and watch cgroup v2 roots
-        for root in self.resolver.discover_cgroup_v2_roots() {
-            let events_path: std::path::PathBuf = root.join("cgroup.events");
-            if let Some(path_str) = events_path.to_str() {
-                let _ = inotify::add_watch(&inotify_fd, path_str, inotify::MODIFY_MASK);
-            }
-        }
 
         let mut events = Vec::new();
         loop {
