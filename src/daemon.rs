@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::resolver::Resolver;
 use crate::cache::UidCache;
 use crate::blocklist::Blocklist;
+use crate::terminal_apps::TerminalApps;
 use crate::socket::{parse_command, Command};
 
 pub struct Daemon {
@@ -16,17 +17,25 @@ pub struct Daemon {
     last_v1_payload: String,
     last_package: Option<String>,
     blocklist_defaults: std::collections::BTreeSet<String>,
+    terminal_apps_path: String,
 }
 
 impl Daemon {
     pub fn new(config: Config) -> Self {
+        let blocklist_defaults = Blocklist::resolve_defaults();
+        Self::new_with_defaults(config, blocklist_defaults)
+    }
+
+    pub fn new_with_defaults(config: Config, blocklist_defaults: std::collections::BTreeSet<String>) -> Self {
         let mut cache = UidCache::new(&config.cache_dir);
         cache.load_or_refresh(&config.packages_xml_path);
 
-        let blocklist_defaults = Blocklist::resolve_defaults();
-        let blocklist = Blocklist::load(&config.blocklist_path, blocklist_defaults.clone());
+        let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone());
 
-        let resolver = Resolver::new(cache, blocklist);
+        let terminal_apps_path = format!("{}/terminal_apps.conf", config.cache_dir);
+        let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);
+
+        let resolver = Resolver::new(cache, blocklist, terminal_apps);
         Self {
             config,
             resolver,
@@ -34,6 +43,7 @@ impl Daemon {
             last_v1_payload: String::new(),
             last_package: None,
             blocklist_defaults,
+            terminal_apps_path,
         }
     }
 
@@ -46,6 +56,9 @@ impl Daemon {
 
         let mut reactor = Reactor::new()?;
 
+        // Setup Signal Handling
+        let signal_token = reactor.setup_signalfd()?;
+
         // Setup Socket
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
         let socket_token = reactor.add(&listener.fd, true, false)?;
@@ -56,6 +69,7 @@ impl Daemon {
 
         let wd_packages = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
         let wd_blocklist = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
+        let wd_terminal_apps = inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK)?;
         let wd_foreground = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
 
         let mut events = Vec::new();
@@ -86,10 +100,13 @@ impl Daemon {
                             }
                         }
                     }
+                } else if ev.token == signal_token {
+                    // SIGTERM or SIGINT received, exit cleanly
+                    return Ok(());
                 } else if ev.token == inotify_token {
                     let in_events = inotify::read_events(&inotify_fd)?;
                     for in_ev in in_events {
-                        if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist {
+                        if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist || in_ev.wd == wd_terminal_apps {
                             refresh_needed = true;
                         }
                         if in_ev.wd == wd_foreground {
@@ -108,7 +125,8 @@ impl Daemon {
 
             if refresh_needed {
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
-                self.resolver.blocklist = Blocklist::load(&self.config.blocklist_path, self.blocklist_defaults.clone());
+                self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone());
+                self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
 
             if notify_needed {

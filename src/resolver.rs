@@ -3,20 +3,23 @@ use coreshift_core::proc::read_proc_cmdline;
 use coreshift_core::uid::proc_stat;
 use crate::cache::UidCache;
 use crate::blocklist::Blocklist;
+use crate::terminal_apps::TerminalApps;
 
 pub struct Resolver {
     pub cache: UidCache,
     pub blocklist: Blocklist,
+    pub terminal_apps: TerminalApps,
     pid_cache: std::collections::HashMap<i32, String>,
     cgroup_v2_roots: Vec<std::path::PathBuf>,
 }
 
 impl Resolver {
-    pub fn new(cache: UidCache, blocklist: Blocklist) -> Self {
+    pub fn new(cache: UidCache, blocklist: Blocklist, terminal_apps: TerminalApps) -> Self {
         let cgroup_v2_roots = Self::discover_cgroup_v2_roots();
         Self {
             cache,
             blocklist,
+            terminal_apps,
             pid_cache: std::collections::HashMap::new(),
             cgroup_v2_roots,
         }
@@ -48,7 +51,7 @@ impl Resolver {
                 let package = if stat.uid >= 10000 {
                     if let Some(pkg) = self.cache.get_package(stat.uid) {
                         // Special handling for terminal apps: check cmdline for '/'
-                        if is_terminal_app(&pkg) {
+                        if self.terminal_apps.is_terminal(&pkg) {
                             if let Ok(cmdline) = read_proc_cmdline(pid) {
                                 if cmdline.contains('/') {
                                     continue;
@@ -174,8 +177,4 @@ impl Resolver {
         }
         roots
     }
-}
-
-fn is_terminal_app(package: &str) -> bool {
-    matches!(package, "com.termux" | "com.termius.client" | "com.server.auditor.ssh.client") || package.starts_with("bin.mt")
 }

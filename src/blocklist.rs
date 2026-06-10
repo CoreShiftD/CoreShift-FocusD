@@ -19,8 +19,13 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
 }
 
 impl Blocklist {
-    pub fn load<P: AsRef<Path>>(path: P, defaults: BTreeSet<String>) -> Self {
+    pub fn load_or_create<P: AsRef<Path>>(path: P, defaults: BTreeSet<String>) -> Self {
         let mut packages = defaults;
+
+        if !path.as_ref().exists() {
+            let _ = fs::create_dir_all(path.as_ref().parent().unwrap());
+            let _ = fs::write(path.as_ref(), "# Blocklist configuration (one package per line, use - to unblock defaults)\n");
+        }
 
         // Static defaults
         let static_defaults = [

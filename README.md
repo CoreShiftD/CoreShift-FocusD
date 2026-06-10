@@ -24,6 +24,15 @@ Focused Android foreground package resolution service and CLI.
     - `status`: Returns the current foreground package.
     - `watch`: Streams foreground changes to the client (non-blocking).
 
+## Usage
+
+Add `coreshift-foreground` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+coreshift-foreground = "0.1.0"
+```
+
 ## Configuration
 
 Simple `key=value` format in `/data/local/tmp/coreshift/coreshift.conf`.

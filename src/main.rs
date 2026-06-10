@@ -1,6 +1,10 @@
 use std::env;
+use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
+use std::time::{Duration, Instant};
 use coreshift_foreground::config::Config;
+use coreshift_foreground::blocklist::Blocklist;
 use coreshift_foreground::daemon::Daemon;
 use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
@@ -16,17 +20,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args[1].as_str() {
         "daemon" => {
-            let mut daemon = Daemon::new(config);
-            if let Err(e) = daemon.run() {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
+            run_supervisor(&config)?;
         }
         "status" => {
-            send_command(&config.socket_name, "status")?;
+            if let Err(e) = send_command(&config.socket_name, "status") {
+                eprintln!("Error: {}. Is the daemon running?", e);
+            }
         }
         "watch" => {
             send_command(&config.socket_name, "watch")?;
+        }
+        "stop" => {
+            stop_daemon(&config)?;
+        }
+        "restart" => {
+            stop_daemon(&config)?;
+            run_supervisor(&config)?;
         }
         _ => {
             print_usage();
@@ -72,7 +81,98 @@ fn send_command(socket_name: &str, cmd: &str) -> Result<(), Box<dyn std::error::
 fn print_usage() {
     println!("Usage: coreshift-foreground <command>");
     println!("Commands:");
-    println!("  daemon   Start the foreground resolution daemon");
+    println!("  daemon   Start the foreground resolution daemon (supervised)");
+    println!("  stop     Stop the running daemon");
+    println!("  restart  Restart the daemon");
     println!("  status   Show current foreground package");
     println!("  watch    Watch for foreground changes");
+}
+
+fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    // Resolve defaults once before forking to supervisor
+    let blocklist_defaults = Blocklist::resolve_defaults();
+
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err("fork supervisor failed".into());
+    }
+    if pid > 0 {
+        // Parent returns immediately
+        return Ok(());
+    }
+
+    // Supervisor process
+    unsafe { libc::setsid(); }
+
+    let mut crash_count = 0;
+    let mut last_crash_window = Instant::now();
+    let pid_file = Path::new(&config.cache_dir).join("daemon.pid");
+
+    loop {
+        let daemon_pid = unsafe { libc::fork() };
+        if daemon_pid < 0 {
+            std::process::exit(1);
+        }
+
+        if daemon_pid == 0 {
+            // Daemon process
+            let mut daemon = Daemon::new_with_defaults(config.clone(), blocklist_defaults.clone());
+            if let Err(_) = daemon.run() {
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+
+        // Supervisor: write PID and wait
+        let _ = fs::write(&pid_file, daemon_pid.to_string());
+
+        let mut status = 0;
+        unsafe { libc::waitpid(daemon_pid, &mut status, 0); }
+        let _ = fs::remove_file(&pid_file);
+
+        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+            // Clean exit (SIGTERM handler path)
+            std::process::exit(0);
+        }
+
+        // Crash/Signal exit: handle restart with backoff
+        crash_count += 1;
+        if last_crash_window.elapsed() > Duration::from_secs(10) {
+            crash_count = 1;
+            last_crash_window = Instant::now();
+        }
+
+        if crash_count >= 5 {
+            eprintln!("Daemon crashed 5 times in 10s, giving up.");
+            std::process::exit(1);
+        }
+
+        let backoff = Duration::from_millis(500 * crash_count);
+        std::thread::sleep(backoff);
+    }
+}
+
+fn stop_daemon(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    let pid_file = Path::new(&config.cache_dir).join("daemon.pid");
+    if let Ok(pid_str) = fs::read_to_string(&pid_file) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            // Send SIGTERM
+            let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+
+            // Wait for pid file to disappear (timeout 3s)
+            let start = Instant::now();
+            while pid_file.exists() && start.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            if pid_file.exists() {
+                println!("Warning: PID file still exists after SIGTERM.");
+            } else {
+                println!("Daemon stopped.");
+            }
+        }
+    } else {
+        println!("Daemon not running (no PID file).");
+    }
+    Ok(())
 }
