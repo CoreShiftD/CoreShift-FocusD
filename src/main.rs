@@ -111,6 +111,7 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // Middle child process
     unsafe {
         libc::setsid();
+        libc::setpgid(0, 0);
     }
 
     let pid = unsafe { libc::fork() };
