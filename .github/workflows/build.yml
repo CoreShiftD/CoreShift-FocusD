@@ -45,37 +45,69 @@ jobs:
 
         echo "Resolving NDK via sdkmanager..."
         if [[ "$MODE" == "stable" ]]; then
-          # Find latest NDK with major version 29
-          PACKAGE_ID=$(sdkmanager --list | grep "ndk;" | grep " 29\." | awk '{print $1}' | sort -V | tail -n 1)
+          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "^    ndk;29\." | awk '{print $1}' | sort -V | tail -n 1)
         else
-          # Find latest NDK with major version 30
-          PACKAGE_ID=$(sdkmanager --list | grep "ndk;" | grep " 30\." | awk '{print $1}' | sort -V | tail -n 1)
+          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "^    ndk;30\." | awk '{print $1}' | sort -V | tail -n 1)
         fi
-        VERSION=$(echo $PACKAGE_ID | cut -d ';' -f 2)
+
+        VERSION=$(echo "$PACKAGE_ID" | cut -d ';' -f 2)
 
         if [[ -z "$VERSION" ]]; then
-          echo "Error: Could not resolve NDK version for $MODE"
+          echo "Error: Could not resolve NDK version for mode=$MODE"
           exit 1
         fi
 
-        echo "Resolved NDK Package: $PACKAGE_ID"
+        echo "Resolved NDK Package: $PACKAGE_ID (version=$VERSION)"
         echo "package_id=$PACKAGE_ID" >> $GITHUB_OUTPUT
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "version=$VERSION"       >> $GITHUB_OUTPUT
+        echo "mode=$MODE"             >> $GITHUB_OUTPUT
 
     - name: Install NDK
       run: |
         echo "y" | sdkmanager "${{ steps.ndk_setup.outputs.package_id }}"
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.ndk_setup.outputs.version }}" >> $GITHUB_ENV
+        NDK_HOME="$ANDROID_HOME/ndk/${{ steps.ndk_setup.outputs.version }}"
+        echo "ANDROID_NDK_HOME=$NDK_HOME" >> $GITHUB_ENV
+        echo "NDK_HOME=$NDK_HOME"         >> $GITHUB_ENV
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      uses: dtolnay/rust-toolchain@master
       with:
+        # stable NDK -> stable Rust, beta NDK -> beta Rust
+        toolchain: ${{ steps.ndk_setup.outputs.mode }}
         targets: ${{ matrix.target }}
+
+    - name: Configure clang linker for target
+      run: |
+        NDK_TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+
+        case "${{ matrix.target }}" in
+          aarch64-linux-android)
+            CLANG_TARGET="aarch64-linux-android28-clang"
+            CARGO_TARGET_ENV="CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+            ;;
+          armv7-linux-androideabi)
+            CLANG_TARGET="armv7a-linux-androideabi28-clang"
+            CARGO_TARGET_ENV="CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER"
+            ;;
+        esac
+
+        CLANG_BIN="$NDK_TOOLCHAIN/bin/$CLANG_TARGET"
+
+        if [[ ! -x "$CLANG_BIN" ]]; then
+          echo "Error: clang not found at $CLANG_BIN"
+          ls "$NDK_TOOLCHAIN/bin/" | grep clang || true
+          exit 1
+        fi
+
+        echo "$CARGO_TARGET_ENV=$CLANG_BIN" >> $GITHUB_ENV
+        echo "CC=$CLANG_BIN"                >> $GITHUB_ENV
+        echo "AR=$NDK_TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+
+        echo "Linker: $CLANG_BIN"
 
     - name: Build
       run: |
-        cargo install cargo-ndk
-        cargo ndk -t ${{ matrix.target }} build --release
+        cargo build --release --target ${{ matrix.target }}
 
     - name: Upload binary
       uses: actions/upload-artifact@v4
