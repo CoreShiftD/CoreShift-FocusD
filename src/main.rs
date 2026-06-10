@@ -105,6 +105,15 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // Parent CLI waits for middle child to ensure detachment
         let mut status = 0;
         unsafe { libc::waitpid(pid, &mut status, 0); }
+
+        // Poll for daemon readiness
+        let ready_file = Path::new(&config.cache_dir).join("daemon.ready");
+        let start = Instant::now();
+        while !ready_file.exists() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = fs::remove_file(ready_file);
+
         return Ok(());
     }
 

@@ -20,6 +20,7 @@ pub struct Daemon {
     watchers: HashMap<Token, UnixStreamFd>,
     last_v1_payload: String,
     last_package: Option<String>,
+    last_broadcasted: Option<String>,
     blocklist_defaults: std::collections::BTreeSet<String>,
     terminal_apps_path: String,
 }
@@ -46,6 +47,7 @@ impl Daemon {
             watchers: HashMap::new(),
             last_v1_payload: String::new(),
             last_package: None,
+            last_broadcasted: None,
             blocklist_defaults,
             terminal_apps_path,
         }
@@ -65,6 +67,11 @@ impl Daemon {
 
         // Setup Socket
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
+
+        // Signal readiness to CLI
+        let ready_file = format!("{}/daemon.ready", self.config.cache_dir);
+        let _ = std::fs::write(ready_file, "");
+
         let socket_token = reactor.add(&listener.fd, true, false)?;
 
         // Setup Inotify
@@ -92,8 +99,10 @@ impl Daemon {
                                 let _ = stream.fd.write_slice(response.as_bytes());
                             }
                             Command::Watch => {
-                                let foreground = self.resolver.resolve().map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
-                                let response = format!("{}\n", foreground);
+                                let current = self.resolver.resolve().map(|r| r.0);
+                                self.last_package = current.clone();
+                                let display = current.as_deref().unwrap_or("unknown");
+                                let response = format!("{}\n", display);
                                 let _ = stream.fd.write_slice(response.as_bytes());
                                 if let Ok(token) = reactor.add(&stream.fd, true, false) {
                                     self.watchers.insert(token, stream);
@@ -155,7 +164,9 @@ impl Daemon {
 
             if notify_needed && !self.watchers.is_empty() {
                 let current_package = self.resolver.resolve().map(|r| r.0);
-                if current_package != self.last_package {
+                self.last_package = current_package.clone();
+
+                if current_package != self.last_broadcasted {
                     if let Some(pkg) = current_package.as_ref() {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
@@ -170,7 +181,7 @@ impl Daemon {
                             }
                         }
                     }
-                    self.last_package = current_package;
+                    self.last_broadcasted = current_package;
                 }
             }
         }
