@@ -45,9 +45,9 @@ jobs:
 
         echo "Resolving NDK via sdkmanager..."
         if [[ "$MODE" == "stable" ]]; then
-          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "^    ndk;29\." | awk '{print $1}' | sort -V | tail -n 1)
+          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "ndk;" | grep " 29\." | awk '{print $1}' | sort -V | tail -n 1)
         else
-          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "^    ndk;30\." | awk '{print $1}' | sort -V | tail -n 1)
+          PACKAGE_ID=$(sdkmanager --list 2>/dev/null | grep "ndk;" | grep " 30\." | awk '{print $1}' | sort -V | tail -n 1)
         fi
 
         VERSION=$(echo "$PACKAGE_ID" | cut -d ';' -f 2)
@@ -72,7 +72,6 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@master
       with:
-        # stable NDK -> stable Rust, beta NDK -> beta Rust
         toolchain: ${{ steps.ndk_setup.outputs.mode }}
         targets: ${{ matrix.target }}
 
