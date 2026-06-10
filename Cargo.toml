@@ -1,0 +1,7 @@
+[package]
+name = "coreshift-foreground"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+coreshift-core = "1.0.0"
