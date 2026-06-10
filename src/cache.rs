@@ -71,6 +71,7 @@ impl UidCache {
         if let Ok(output) = run_command("/system/bin/cmd", &["package", "list", "packages", "-f", "-U"]) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             self.mapping = parse_package_list(&stdout);
+            self.miss_counts.clear();
         }
     }
 

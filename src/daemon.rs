@@ -38,10 +38,15 @@ impl Daemon {
     }
 
     pub fn run(&mut self) -> Result<(), CoreError> {
+        // Guard: Check if daemon is already running
+        let socket_addr = UnixSocketAddr::Abstract(self.config.socket_name.as_bytes());
+        if coreshift_core::unix_socket::connect_unix_stream(socket_addr).is_ok() {
+            return Err(CoreError::sys(libc::EADDRINUSE, "bind"));
+        }
+
         let mut reactor = Reactor::new()?;
 
         // Setup Socket
-        let socket_addr = UnixSocketAddr::Abstract(self.config.socket_name.as_bytes());
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
         let socket_token = reactor.add(&listener.fd, true, false)?;
 

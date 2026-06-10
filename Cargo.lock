@@ -16,6 +16,7 @@ name = "coreshift-foreground"
 version = "0.1.0"
 dependencies = [
  "coreshift-core",
+ "libc",
 ]
 
 [[package]]
