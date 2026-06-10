@@ -30,26 +30,39 @@ jobs:
       id: ndk_setup
       run: |
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          VERSION="${{ github.event.inputs.ndk_version }}"
+          MODE="${{ github.event.inputs.ndk_version }}"
         else
-          VERSION="stable"
+          MODE="stable"
         fi
 
-        if [[ "$VERSION" == "stable" ]]; then
-          echo "ndk=r29" >> $GITHUB_OUTPUT
+        echo "Resolving NDK via sdkmanager..."
+        if [[ "$MODE" == "stable" ]]; then
+          # Find latest NDK with major version 29
+          PACKAGE_ID=$(sdkmanager --list | grep "ndk;" | grep " 29\." | awk '{print $1}' | sort -V | tail -n 1)
         else
-          echo "ndk=r30" >> $GITHUB_OUTPUT
+          # Find latest NDK with major version 30
+          PACKAGE_ID=$(sdkmanager --list | grep "ndk;" | grep " 30\." | awk '{print $1}' | sort -V | tail -n 1)
         fi
+        VERSION=$(echo $PACKAGE_ID | cut -d ';' -f 2)
+
+        if [[ -z "$VERSION" ]]; then
+          echo "Error: Could not resolve NDK version for $MODE"
+          exit 1
+        fi
+
+        echo "Resolved NDK Package: $PACKAGE_ID"
+        echo "package_id=$PACKAGE_ID" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Install NDK
+      run: |
+        echo "y" | sdkmanager "${{ steps.ndk_setup.outputs.package_id }}"
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.ndk_setup.outputs.version }}" >> $GITHUB_ENV
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.target }}
-
-    - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: ${{ steps.ndk_setup.outputs.ndk }}
 
     - name: Build
       run: |
