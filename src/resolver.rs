@@ -45,7 +45,7 @@ impl Resolver {
             }
 
             if let Some(package) = self.pid_cache.get(&pid) {
-                if !self.blocklist.is_blocked(package) {
+                if !package.is_empty() && !self.blocklist.is_blocked(package) {
                     filtered.push(pid);
                 }
                 continue;
@@ -58,6 +58,7 @@ impl Resolver {
                         if self.terminal_apps.is_terminal(&pkg) {
                             if let Ok(cmdline) = read_proc_cmdline(pid) {
                                 if cmdline.contains('/') {
+                                    self.pid_cache.insert(pid, String::new());
                                     continue;
                                 }
                             }
@@ -68,13 +69,8 @@ impl Resolver {
                     }
                 } else if let Ok(cmdline) = read_proc_cmdline(pid) {
                     let pkg = cmdline.trim().to_string();
-                    if !pkg.is_empty() {
-                        // For system apps/processes, only allow com.android or com.google
-                        if pkg.starts_with("com.android.") || pkg.starts_with("com.google.") {
-                            Some(pkg)
-                        } else {
-                            None
-                        }
+                    if !pkg.is_empty() && (pkg.starts_with("com.android.") || pkg.starts_with("com.google.")) {
+                        Some(pkg)
                     } else {
                         None
                     }
@@ -82,10 +78,15 @@ impl Resolver {
                     None
                 };
 
-                if let Some(pkg) = package {
-                    if !self.blocklist.is_blocked(&pkg) {
-                        self.pid_cache.insert(pid, pkg);
-                        filtered.push(pid);
+                match package {
+                    Some(pkg) => {
+                        self.pid_cache.insert(pid, pkg.clone());
+                        if !self.blocklist.is_blocked(&pkg) {
+                            filtered.push(pid);
+                        }
+                    }
+                    None => {
+                        self.pid_cache.insert(pid, String::new());
                     }
                 }
             }

@@ -35,7 +35,8 @@ impl Daemon {
         let mut cache = UidCache::new(&config.cache_dir);
         cache.load_or_refresh(&config.packages_xml_path);
 
-        let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), true);
+        // Don't persist on startup unless the file is missing to avoid triggering an immediate inotify reload
+        let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), false);
 
         let terminal_apps_path = format!("{}/terminal_apps.conf", config.cache_dir);
         let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);

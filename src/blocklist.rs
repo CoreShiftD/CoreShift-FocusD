@@ -111,7 +111,7 @@ impl Blocklist {
         let mut defaults = BTreeSet::new();
 
         // Resolve Launcher
-        if let Ok(output) = run_command("/system/bin/cmd", &["activity", "resolve-activity", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
+        if let Ok(output) = run_command("/system/bin/cmd", &["package", "resolve-activity", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
             let s = String::from_utf8_lossy(&output.stdout);
             if let Some(package) = s.lines().find_map(|line| line.trim().strip_prefix("packageName=")) {
                 defaults.insert(package.to_string());
@@ -145,5 +145,9 @@ fn parse_package_from_component(stdout: &[u8]) -> Option<String> {
 }
 
 fn parse_package_from_component_str(component: &str) -> Option<String> {
-    component.split('/').next().map(|s| s.to_string())
+    let pkg = component.split('/').next()?.trim();
+    if pkg.is_empty() || pkg == "null" {
+        return None;
+    }
+    Some(pkg.to_string())
 }

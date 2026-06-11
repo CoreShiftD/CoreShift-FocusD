@@ -370,8 +370,12 @@ impl Reactor {
         }
 
         let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-        unsafe { libc::sigemptyset(&mut mask) };
-        unsafe { libc::sigaddset(&mut mask, libc::SIGCHLD) };
+        unsafe {
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGCHLD);
+            libc::sigaddset(&mut mask, libc::SIGTERM);
+            libc::sigaddset(&mut mask, libc::SIGINT);
+        };
 
         let mut previous_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
         let r = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &mask, &mut previous_mask) };

@@ -39,6 +39,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "restart" => {
             stop_daemon(&config)?;
+
+            // Wait for abstract socket to be fully released
+            let addr = UnixSocketAddr::Abstract(config.socket_name.as_bytes());
+            let start = Instant::now();
+            while connect_unix_stream(addr).is_ok() && start.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
             run_supervisor(&config)?;
         }
         _ => {
