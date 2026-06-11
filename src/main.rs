@@ -69,10 +69,11 @@ fn send_command(socket_name: &str, cmd: &str) -> Result<(), Box<dyn std::error::
         }
     };
 
-    stream.fd.write_slice(cmd.as_bytes())?;
-
     let mut reactor = Reactor::new()?;
     let token = reactor.add(&stream.fd, true, false)?;
+
+    stream.fd.write_slice(cmd.as_bytes())?;
+
     let mut events = Vec::new();
 
     loop {

@@ -96,7 +96,10 @@ impl Daemon {
             for ev in &events {
                 if ev.token == socket_token {
                     // Drain the edge-triggered listener
+                    let mut count = 0;
                     while let Ok(Some(stream)) = listener.accept() {
+                        count += 1;
+                        if count > 16 { break; }
                         match parse_command(&stream) {
                             Command::Status => {
                                 let foreground = self.resolver.resolve().map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
