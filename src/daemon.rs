@@ -63,7 +63,7 @@ impl Daemon {
 
         let mut reactor = Reactor::new()?;
 
-        // Setup Signal Handling
+        // Setup Signal Handling (v1.1.0 supports SIGTERM/INT via signalfd)
         let signal_token = reactor.setup_signalfd()?;
 
         // Setup Socket
