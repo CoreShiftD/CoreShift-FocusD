@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 use coreshift_core::reactor::{Reactor, Token};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
-use coreshift_core::inotify;
+use coreshift_core::inotify::{self, read_events};
+use coreshift_core::signal::{SignalRuntime, SIGTERM, SIGINT};
 use coreshift_core::CoreError;
 use crate::config::Config;
 use crate::resolver::Resolver;
@@ -63,8 +64,11 @@ impl Daemon {
 
         let mut reactor = Reactor::new()?;
 
-        // Setup Signal Handling (v1.1.0 supports SIGTERM/INT via signalfd)
-        let signal_token = reactor.setup_signalfd()?;
+        // Setup Robust Signal Handling via signalfd
+        let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT, libc::SIGCHLD])?;
+        SignalRuntime::block_current_thread(&mask)?;
+        let signal_fd = SignalRuntime::signalfd_new(&mask)?;
+        let signal_token = reactor.add(&signal_fd, true, false)?;
 
         // Setup Socket
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
@@ -75,9 +79,8 @@ impl Daemon {
 
         let socket_token = reactor.add(&listener.fd, true, false)?;
 
-        // Setup Inotify
-        let inotify_fd = inotify::init()?;
-        let inotify_token = reactor.add(&inotify_fd, true, false)?;
+        // Setup Inotify using official setup helper
+        let (inotify_fd, inotify_token) = reactor.setup_inotify()?;
 
         let wd_packages = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
         let wd_blocklist = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
@@ -92,7 +95,8 @@ impl Daemon {
 
             for ev in &events {
                 if ev.token == socket_token {
-                    if let Ok(Some(stream)) = listener.accept() {
+                    // Drain the edge-triggered listener
+                    while let Ok(Some(stream)) = listener.accept() {
                         match parse_command(&stream) {
                             Command::Status => {
                                 let foreground = self.resolver.resolve().map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
@@ -116,10 +120,15 @@ impl Daemon {
                         }
                     }
                 } else if ev.token == signal_token {
-                    // SIGTERM or SIGINT received, exit cleanly
-                    return Ok(());
+                    let mut buf = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
+                    while let Ok(Some(_)) = signal_fd.read_slice(&mut buf) {
+                        let info: libc::signalfd_siginfo = unsafe { std::mem::transmute(buf) };
+                        if info.ssi_signo == SIGTERM as u32 || info.ssi_signo == SIGINT as u32 {
+                            return Ok(());
+                        }
+                    }
                 } else if ev.token == inotify_token {
-                    let in_events = inotify::read_events(&inotify_fd)?;
+                    let in_events = read_events(&inotify_fd)?;
                     for in_ev in in_events {
                         if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist || in_ev.wd == wd_terminal_apps {
                             refresh_needed = true;
