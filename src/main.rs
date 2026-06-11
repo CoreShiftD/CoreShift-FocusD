@@ -43,7 +43,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wait for abstract socket to be fully released
             let addr = UnixSocketAddr::Abstract(config.socket_name.as_bytes());
             let start = Instant::now();
-            while connect_unix_stream(addr).is_ok() && start.elapsed() < Duration::from_secs(3) {
+            while start.elapsed() < Duration::from_secs(3) {
+                if connect_unix_stream(addr).is_err() {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
 
@@ -166,6 +169,9 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
             unsafe {
                 // Ensure daemon dies if supervisor dies
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+
+                // Ignore SIGPIPE to prevent death on watcher hangup
+                libc::signal(libc::SIGPIPE, libc::SIG_IGN);
 
                 // Close inherited file descriptors (except stdio)
                 for i in 3..1024 {
