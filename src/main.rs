@@ -11,6 +11,8 @@ use coreshift_foreground::config::Config;
 use coreshift_foreground::daemon::Daemon;
 use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
+use coreshift_core::spawn::{Process, ExitStatus};
+use coreshift_core::signal::SIGTERM;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -119,8 +121,8 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     }
     if pid > 0 {
         // Parent CLI waits for middle child to ensure detachment
-        let mut status = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0); }
+        let process = Process::new(pid);
+        let _ = process.wait_blocking();
 
         // Poll for daemon readiness
         let ready_file = Path::new(&config.cache_dir).join("daemon.ready");
@@ -200,11 +202,11 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // Supervisor: write PID and wait
         let _ = fs::write(&pid_file, daemon_pid.to_string());
 
-        let mut status = 0;
-        unsafe { libc::waitpid(daemon_pid, &mut status, 0); }
+        let process = Process::new(daemon_pid);
+        let status = process.wait_blocking();
         let _ = fs::remove_file(&pid_file);
 
-        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        if let Ok(ExitStatus::Exited(0)) = status {
             // Clean exit (SIGTERM handler path)
             std::process::exit(0);
         }
@@ -231,7 +233,7 @@ fn stop_daemon(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(pid_str) = fs::read_to_string(&pid_file) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             // Send SIGTERM
-            let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+            let _ = Process::new(pid).kill(SIGTERM);
 
             // Wait for pid file to disappear (timeout 3s)
             let start = Instant::now();

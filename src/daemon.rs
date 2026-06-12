@@ -24,7 +24,6 @@ pub struct Daemon {
     last_v1_payload: String,
     last_max_pid: i32,
     last_package: Option<String>,
-    last_broadcasted: Option<String>,
     blocklist_defaults: std::collections::BTreeSet<String>,
     terminal_apps_path: String,
 }
@@ -51,7 +50,6 @@ impl Daemon {
             last_v1_payload: String::new(),
             last_max_pid: 0,
             last_package: None,
-            last_broadcasted: None,
             blocklist_defaults,
             terminal_apps_path,
         }
@@ -120,11 +118,10 @@ impl Daemon {
 
                                 if let Some((pkg, _, cgroup_paths)) = res {
                                     self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
-                                    self.last_broadcasted = Some(pkg.clone());
                                     let response = format!("{}\n", pkg);
                                     let _ = stream.fd.write_slice(response.as_bytes());
                                 } else {
-                                    let _ = stream.fd.write_slice(b"unknown\n");
+                                    self.update_cgroup_monitors(&mut reactor, &[]);
                                 }
 
                                 if let Ok(token) = reactor.add(&stream.fd, true, false) {
@@ -219,12 +216,9 @@ impl Daemon {
             if notify_needed && !self.watchers.is_empty() {
                 let res = self.resolver.resolve();
                 let current_package = res.as_ref().map(|r| r.0.clone());
-                self.last_package = current_package.clone();
 
-                if let Some((pkg, _, cgroup_paths)) = res {
-                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
-
-                    if Some(&pkg) != self.last_broadcasted.as_ref() {
+                if let Some(pkg) = &current_package {
+                    if current_package != self.last_package {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
                         for (token, stream) in &self.watchers {
@@ -237,8 +231,17 @@ impl Daemon {
                                 let _ = reactor.del(&stream.fd);
                             }
                         }
+                        self.last_package = current_package;
                     }
-                    self.last_broadcasted = current_package;
+                } else {
+                    // Update internal state even for None so we can detect re-entry to the same app
+                    self.last_package = None;
+                }
+
+                if let Some((_, _, cgroup_paths)) = res {
+                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
+                } else {
+                    self.update_cgroup_monitors(&mut reactor, &[]);
                 }
             }
         }
