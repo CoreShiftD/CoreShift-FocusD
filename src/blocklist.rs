@@ -35,6 +35,8 @@ impl Blocklist {
             "com.google.android.googlequicksearchbox",
             "com.google.android.apps.googleassistant",
             "com.google.android.permissioncontroller",
+            "com.google.android.providers.media.module",
+            "com.google.android.documentsui",
         ];
 
         let mut user_additions = BTreeSet::new();

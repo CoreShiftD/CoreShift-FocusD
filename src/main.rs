@@ -8,14 +8,15 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use coreshift_foreground::config::Config;
-use coreshift_foreground::blocklist::Blocklist;
 use coreshift_foreground::daemon::Daemon;
 use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-    let config = Config::load("/data/local/tmp/coreshift/coreshift.conf");
+    let config_dir = "/data/local/tmp/coreshift";
+    let _ = fs::create_dir_all(config_dir);
+    let config = Config::load(&format!("{}/coreshift.conf", config_dir));
 
     if args.len() < 2 {
         print_usage();
@@ -24,6 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args[1].as_str() {
         "daemon" => {
+            // Check if daemon is already running
+            let addr = UnixSocketAddr::Abstract(config.socket_name.as_bytes());
+            if connect_unix_stream(addr).is_ok() {
+                println!("Daemon is already running.");
+                return Ok(());
+            }
             run_supervisor(&config)?;
         }
         "status" => {
@@ -105,9 +112,6 @@ fn print_usage() {
 }
 
 fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    // Resolve defaults once before forking to supervisor
-    let blocklist_defaults = Blocklist::resolve_defaults();
-
     // Double fork to ensure complete detachment
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -121,10 +125,15 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
         // Poll for daemon readiness
         let ready_file = Path::new(&config.cache_dir).join("daemon.ready");
         let start = Instant::now();
-        while !ready_file.exists() && start.elapsed() < Duration::from_secs(5) {
-            std::thread::sleep(Duration::from_millis(50));
+        while !ready_file.exists() && start.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(100));
         }
-        let _ = fs::remove_file(ready_file);
+
+        if ready_file.exists() {
+            let _ = fs::remove_file(ready_file);
+        } else {
+            println!("Warning: Daemon start timed out (signaled ready file missing).");
+        }
 
         return Ok(());
     }
@@ -181,7 +190,7 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            let mut daemon = Daemon::new_with_defaults(config.clone(), blocklist_defaults.clone());
+            let mut daemon = Daemon::new(config.clone());
             if let Err(_) = daemon.run() {
                 std::process::exit(1);
             }

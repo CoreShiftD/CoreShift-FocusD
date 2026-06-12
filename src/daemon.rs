@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
 use coreshift_core::reactor::{Reactor, Token};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
 use coreshift_core::inotify::{self, read_events};
@@ -28,13 +29,10 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(config: Config) -> Self {
-        let blocklist_defaults = Blocklist::resolve_defaults();
-        Self::new_with_defaults(config, blocklist_defaults)
-    }
-
-    pub fn new_with_defaults(config: Config, blocklist_defaults: std::collections::BTreeSet<String>) -> Self {
         let mut cache = UidCache::new(&config.cache_dir);
         cache.load_or_refresh(&config.packages_xml_path);
+
+        let blocklist_defaults = Blocklist::resolve_defaults();
 
         // Don't persist on startup unless the file is missing to avoid triggering an immediate inotify reload
         let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), false);
@@ -128,9 +126,15 @@ impl Daemon {
                         }
                     }
                 } else if ev.token == signal_token {
-                    let mut buf = [0u8; std::mem::size_of::<libc::signalfd_siginfo>()];
-                    while let Ok(Some(_)) = signal_fd.read_slice(&mut buf) {
-                        let info: libc::signalfd_siginfo = unsafe { std::mem::transmute(buf) };
+                    let mut sig_info = MaybeUninit::<libc::signalfd_siginfo>::uninit();
+                    let buf = unsafe {
+                        std::slice::from_raw_parts_mut(
+                            sig_info.as_mut_ptr() as *mut u8,
+                            std::mem::size_of::<libc::signalfd_siginfo>(),
+                        )
+                    };
+                    while let Ok(Some(_)) = signal_fd.read_slice(buf) {
+                        let info = unsafe { sig_info.assume_init() };
                         if info.ssi_signo == SIGTERM as u32 || info.ssi_signo == SIGINT as u32 {
                             return Ok(());
                         }
@@ -185,8 +189,8 @@ impl Daemon {
                 let current_package = self.resolver.resolve().map(|r| r.0);
                 self.last_package = current_package.clone();
 
-                if let Some(pkg) = current_package {
-                    if Some(&pkg) != self.last_broadcasted.as_ref() {
+                if current_package != self.last_broadcasted {
+                    if let Some(pkg) = current_package.as_ref() {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
                         for (token, stream) in &self.watchers {
@@ -199,8 +203,8 @@ impl Daemon {
                                 let _ = reactor.del(&stream.fd);
                             }
                         }
-                        self.last_broadcasted = Some(pkg);
                     }
+                    self.last_broadcasted = current_package;
                 }
             }
         }

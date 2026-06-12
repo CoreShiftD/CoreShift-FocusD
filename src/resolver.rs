@@ -57,7 +57,8 @@ impl Resolver {
                         // Special handling for terminal apps: check cmdline for '/'
                         if self.terminal_apps.is_terminal(&pkg) {
                             if let Ok(cmdline) = read_proc_cmdline(pid) {
-                                if cmdline.contains('/') {
+                                let proc_name = cmdline.split('\0').next().unwrap_or("").trim();
+                                if proc_name != pkg {
                                     self.pid_cache.insert(pid, String::new());
                                     continue;
                                 }
@@ -68,9 +69,9 @@ impl Resolver {
                         None
                     }
                 } else if let Ok(cmdline) = read_proc_cmdline(pid) {
-                    let pkg = cmdline.trim().to_string();
+                    let pkg = cmdline.split('\0').next().unwrap_or("").trim();
                     if !pkg.is_empty() && (pkg.starts_with("com.android.") || pkg.starts_with("com.google.")) {
-                        Some(pkg)
+                        Some(pkg.to_string())
                     } else {
                         None
                     }
