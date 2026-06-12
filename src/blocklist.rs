@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use coreshift_core::spawn::{SpawnOptions, SpawnBackend, Output};
 use coreshift_core::CoreError;
 
 #[derive(Debug, Clone, Default)]
@@ -13,17 +13,14 @@ pub struct Blocklist {
     pub packages: BTreeSet<String>,
 }
 
-struct CommandOutput {
-    stdout: Vec<u8>,
-}
-
-fn run_command(cmd: &str, args: &[&str]) -> Result<CommandOutput, CoreError> {
-    let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|e| CoreError::sys(e.raw_os_error().unwrap_or(libc::EIO), "command execution failed"))?;
-
-    Ok(CommandOutput { stdout: output.stdout })
+fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
+    let mut argv = vec![cmd.to_string()];
+    argv.extend(args.iter().map(|s| s.to_string()));
+    SpawnOptions::builder(argv, SpawnBackend::PosixSpawn)
+        .capture_stdout()
+        .timeout_ms(10000)
+        .build()?
+        .run()
 }
 
 impl Blocklist {
