@@ -28,6 +28,7 @@ impl Blocklist {
         let mut packages = BTreeSet::new();
 
         let static_defaults = [
+            "com.android.systemui",
             "com.google.android.as*",
             "com.google.android.gms*",
             "com.google.android.apps.wellbeing",

@@ -20,7 +20,9 @@ pub struct Daemon {
     config: Config,
     resolver: Resolver,
     watchers: HashMap<Token, UnixStreamFd>,
+    cgroup_monitors: HashMap<Token, (std::path::PathBuf, coreshift_core::reactor::Fd)>,
     last_v1_payload: String,
+    last_max_pid: i32,
     last_package: Option<String>,
     last_broadcasted: Option<String>,
     blocklist_defaults: std::collections::BTreeSet<String>,
@@ -45,7 +47,9 @@ impl Daemon {
             config,
             resolver,
             watchers: HashMap::new(),
+            cgroup_monitors: HashMap::new(),
             last_v1_payload: String::new(),
+            last_max_pid: 0,
             last_package: None,
             last_broadcasted: None,
             blocklist_defaults,
@@ -100,15 +104,22 @@ impl Daemon {
                         if count > 16 { break; }
                         match parse_command(&stream) {
                             Command::Status => {
-                                let foreground = self.resolver.resolve().map(|r| r.0).unwrap_or_else(|| "unknown".to_string());
-                                let response = format!("foreground: {}\ncache_entries: {}\n", foreground, self.resolver.cache.mapping.len());
-                                let _ = stream.fd.write_slice(response.as_bytes());
+                                let res = self.resolver.resolve();
+                                if let Some((pkg, _, cgroup_paths)) = res {
+                                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
+                                    let response = format!("foreground: {}\ncache_entries: {}\n", pkg, self.resolver.cache.mapping.len());
+                                    let _ = stream.fd.write_slice(response.as_bytes());
+                                } else {
+                                    let _ = stream.fd.write_slice(b"foreground: unknown\ncache_entries: 0\n");
+                                }
                             }
                             Command::Watch => {
-                                let current = self.resolver.resolve().map(|r| r.0);
+                                let res = self.resolver.resolve();
+                                let current = res.as_ref().map(|r| r.0.clone());
                                 self.last_package = current.clone();
 
-                                if let Some(pkg) = current.as_ref() {
+                                if let Some((pkg, _, cgroup_paths)) = res {
+                                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
                                     self.last_broadcasted = Some(pkg.clone());
                                     let response = format!("{}\n", pkg);
                                     let _ = stream.fd.write_slice(response.as_bytes());
@@ -156,6 +167,17 @@ impl Daemon {
                             let _ = reactor.del(&stream.fd);
                         }
                     }
+                } else if let Some((cgroup_path, _)) = self.cgroup_monitors.get(&ev.token) {
+                    if ev.priority {
+                        // Cgroup v2 events changed (likely populated 0)
+                        let events_path = cgroup_path.join("cgroup.events");
+                        if let Ok(content) = std::fs::read_to_string(events_path) {
+                            if content.contains("populated 0") {
+                                // Process died or moved, clear the pid cache for safety
+                                self.resolver.clear_pid_cache();
+                            }
+                        }
+                    }
                 }
             }
 
@@ -181,16 +203,28 @@ impl Daemon {
                 if current_v1_payload == self.last_v1_payload {
                     notify_needed = false;
                 } else {
+                    // Detect PID wrap-around: if max PID dropped significantly, clear cache
+                    let current_max_pid = current_v1_payload.lines()
+                        .filter_map(|l| l.trim().parse::<i32>().ok())
+                        .max().unwrap_or(0);
+
+                    if current_max_pid < self.last_max_pid / 2 {
+                        self.resolver.clear_pid_cache();
+                    }
+                    self.last_max_pid = current_max_pid;
                     self.last_v1_payload = current_v1_payload;
                 }
             }
 
             if notify_needed && !self.watchers.is_empty() {
-                let current_package = self.resolver.resolve().map(|r| r.0);
+                let res = self.resolver.resolve();
+                let current_package = res.as_ref().map(|r| r.0.clone());
                 self.last_package = current_package.clone();
 
-                if current_package != self.last_broadcasted {
-                    if let Some(pkg) = current_package.as_ref() {
+                if let Some((pkg, _, cgroup_paths)) = res {
+                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
+
+                    if Some(&pkg) != self.last_broadcasted.as_ref() {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
                         for (token, stream) in &self.watchers {
@@ -205,6 +239,41 @@ impl Daemon {
                         }
                     }
                     self.last_broadcasted = current_package;
+                }
+            }
+        }
+    }
+    fn update_cgroup_monitors(&mut self, reactor: &mut Reactor, paths: &[std::path::PathBuf]) {
+        // Simple logic: we only monitor the current candidates.
+        // To keep it efficient, we clear old monitors that aren't in the new set.
+        let new_set: std::collections::HashSet<_> = paths.iter().collect();
+        let mut to_remove = Vec::new();
+
+        for (token, (path, _)) in &self.cgroup_monitors {
+            if !new_set.contains(path) {
+                to_remove.push(*token);
+            }
+        }
+
+        for token in to_remove {
+            if let Some((_, fd)) = self.cgroup_monitors.remove(&token) {
+                let _ = reactor.del(&fd);
+            }
+        }
+
+        for path in paths {
+            let events_path = path.join("cgroup.events");
+            if !self.cgroup_monitors.values().any(|(p, _)| p == path) {
+                if let Ok(file) = std::fs::File::open(&events_path) {
+                    use std::os::unix::io::AsRawFd;
+                    // Note: coreshift-core Fd::from_owned_raw_fd transfers ownership
+                    if let Ok(fd) = unsafe { coreshift_core::reactor::Fd::from_owned_raw_fd(file.as_raw_fd(), "cgroup.events") } {
+                        // Forget the file so it doesn't close yet
+                        std::mem::forget(file);
+                        if let Ok(token) = reactor.add_priority(&fd) {
+                            self.cgroup_monitors.insert(token, (path.clone(), fd));
+                        }
+                    }
                 }
             }
         }

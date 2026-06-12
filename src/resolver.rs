@@ -29,7 +29,11 @@ impl Resolver {
         }
     }
 
-    pub fn resolve(&mut self) -> Option<(String, bool)> {
+    pub fn clear_pid_cache(&mut self) {
+        self.pid_cache.clear();
+    }
+
+    pub fn resolve(&mut self) -> Option<(String, bool, Vec<std::path::PathBuf>)> {
         // 1. Get initial candidates from top-app CPUSet (Cgroup v1)
         let v1_pids = self.get_v1_top_app_pids("/dev/cpuset/top-app/cgroup.procs");
         if v1_pids.is_empty() {
@@ -98,7 +102,20 @@ impl Resolver {
         }
 
         // 3. Select the best remaining PID via OOM score
-        self.select_best_by_oom(&filtered)
+        let winner = self.select_best_by_oom(&filtered);
+
+        match winner {
+            Some((pkg, is_app)) => {
+                let mut cgroup_paths = Vec::new();
+                for pid in filtered {
+                    if let Some(path) = self.get_pid_cgroup_v2_path(pid) {
+                        cgroup_paths.push(path);
+                    }
+                }
+                Some((pkg, is_app, cgroup_paths))
+            }
+            None => None
+        }
     }
 
     fn get_v1_top_app_pids(&self, path: &str) -> Vec<i32> {
@@ -112,23 +129,30 @@ impl Resolver {
         pids
     }
 
-    fn is_pid_in_populated_v2_group(&self, pid: i32) -> bool {
+    fn get_pid_cgroup_v2_path(&self, pid: i32) -> Option<std::path::PathBuf> {
         let cgroup_path = format!("/proc/{}/cgroup", pid);
-        let Ok(content) = fs::read_to_string(cgroup_path) else {
-            return false;
-        };
+        let content = fs::read_to_string(cgroup_path).ok()?;
 
-        // Find the v2 path for this PID
         for line in content.lines() {
             let parts: Vec<&str> = line.split(':').collect();
             if parts.len() >= 3 && parts[0] == "0" && parts[1] == "" {
                 let v2_rel_path = parts[2].trim_start_matches('/');
                 for root in &self.cgroup_v2_roots {
-                    let full_v2_path = root.join(v2_rel_path).join("cgroup.events");
-                    if let Ok(events_content) = fs::read_to_string(full_v2_path) {
-                        return events_content.contains("populated 1");
+                    let full_v2_path = root.join(v2_rel_path);
+                    if full_v2_path.exists() {
+                        return Some(full_v2_path);
                     }
                 }
+            }
+        }
+        None
+    }
+
+    fn is_pid_in_populated_v2_group(&self, pid: i32) -> bool {
+        if let Some(path) = self.get_pid_cgroup_v2_path(pid) {
+            let events_path = path.join("cgroup.events");
+            if let Ok(events_content) = fs::read_to_string(events_path) {
+                return events_content.contains("populated 1");
             }
         }
         false
