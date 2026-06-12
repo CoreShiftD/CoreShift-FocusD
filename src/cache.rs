@@ -5,8 +5,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use coreshift_core::fs::path_fingerprint;
-use coreshift_core::spawn::{SpawnOptions, SpawnBackend, Output};
 use coreshift_core::CoreError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,13 +32,17 @@ pub struct UidCache {
     miss_counts: HashMap<u32, u8>,
 }
 
-fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
-    let mut argv = vec![cmd.to_string()];
-    argv.extend(args.iter().map(|s| s.to_string()));
-    SpawnOptions::builder(argv, SpawnBackend::PosixSpawn)
-        .capture_stdout()
-        .build()?
-        .run()
+struct CommandOutput {
+    stdout: Vec<u8>,
+}
+
+fn run_command(cmd: &str, args: &[&str]) -> Result<CommandOutput, CoreError> {
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| CoreError::sys(e.raw_os_error().unwrap_or(libc::EIO), "command execution failed"))?;
+
+    Ok(CommandOutput { stdout: output.stdout })
 }
 
 impl UidCache {
