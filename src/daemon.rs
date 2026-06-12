@@ -109,10 +109,15 @@ impl Daemon {
                             Command::Watch => {
                                 let current = self.resolver.resolve().map(|r| r.0);
                                 self.last_package = current.clone();
-                                self.last_broadcasted = current.clone();
-                                let display = current.as_deref().unwrap_or("unknown");
-                                let response = format!("{}\n", display);
-                                let _ = stream.fd.write_slice(response.as_bytes());
+
+                                if let Some(pkg) = current.as_ref() {
+                                    self.last_broadcasted = Some(pkg.clone());
+                                    let response = format!("{}\n", pkg);
+                                    let _ = stream.fd.write_slice(response.as_bytes());
+                                } else {
+                                    let _ = stream.fd.write_slice(b"unknown\n");
+                                }
+
                                 if let Ok(token) = reactor.add(&stream.fd, true, false) {
                                     self.watchers.insert(token, stream);
                                 }
@@ -180,8 +185,8 @@ impl Daemon {
                 let current_package = self.resolver.resolve().map(|r| r.0);
                 self.last_package = current_package.clone();
 
-                if current_package != self.last_broadcasted {
-                    if let Some(pkg) = current_package.as_ref() {
+                if let Some(pkg) = current_package {
+                    if Some(&pkg) != self.last_broadcasted.as_ref() {
                         let response = format!("{}\n", pkg);
                         let mut broken = Vec::new();
                         for (token, stream) in &self.watchers {
@@ -194,8 +199,8 @@ impl Daemon {
                                 let _ = reactor.del(&stream.fd);
                             }
                         }
+                        self.last_broadcasted = Some(pkg);
                     }
-                    self.last_broadcasted = current_package;
                 }
             }
         }

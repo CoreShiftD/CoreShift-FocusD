@@ -171,7 +171,8 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
                 // Ensure daemon dies if supervisor dies
                 libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
 
-                // Ignore SIGPIPE to prevent death on watcher hangup
+                // Ignore SIGHUP and SIGPIPE to prevent death on terminal exit or watcher hangup
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
                 libc::signal(libc::SIGPIPE, libc::SIG_IGN);
 
                 // Close inherited file descriptors (except stdio)
