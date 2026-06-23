@@ -22,9 +22,11 @@ pub struct Daemon {
     config: Config,
     binder: Option<BinderForegroundSource>,
     resolver: Resolver,
-    // Keyed by caller UID — same UID reconnecting replaces old subscription.
+    // Pending accepted connections waiting for a readable command.
+    pending: HashMap<Token, UnixStreamFd>,
+    // Active watch subscriptions keyed by caller UID.
     watchers: HashMap<u32, (Token, UnixStreamFd)>,
-    // Reverse map: reactor token → caller UID, for epoll event dispatch.
+    // Reverse map: watcher reactor token → caller UID.
     token_to_uid: HashMap<Token, u32>,
     cgroup_monitors: HashMap<Token, (std::path::PathBuf, coreshift_core::reactor::Fd)>,
     last_v1_payload: String,
@@ -51,6 +53,7 @@ impl Daemon {
             config,
             binder,
             resolver,
+            pending: HashMap::new(),
             watchers: HashMap::new(),
             token_to_uid: HashMap::new(),
             cgroup_monitors: HashMap::new(),
@@ -96,50 +99,13 @@ impl Daemon {
 
             for ev in &events {
                 if ev.token == socket_token {
+                    // New connections: register with epoll, read command when readable.
                     let mut count = 0;
                     while let Ok(Some(stream)) = listener.accept() {
                         count += 1;
                         if count > 16 { break; }
-                        let (cmd, caller_uid) = parse_command(&stream);
-                        // Reject callers not matching daemon_uid allowlist.
-                        if let Some(allowed) = self.config.daemon_uid {
-                            if caller_uid != allowed {
-                                continue;
-                            }
-                        }
-                        match cmd {
-                            Command::Status => {
-                                let res = self.resolve_foreground();
-                                if let Some((pkg, cgroup_paths)) = res {
-                                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
-                                    let response = format!("foreground: {}\ncache_entries: {}\n", pkg, self.resolver.cache.mapping.len());
-                                    let _ = stream.fd.write_slice(response.as_bytes());
-                                } else {
-                                    let _ = stream.fd.write_slice(b"foreground: unknown\ncache_entries: 0\n");
-                                }
-                            }
-                            Command::Watch => {
-                                let res = self.resolve_foreground();
-                                let current = res.as_ref().map(|r| r.0.clone());
-                                self.last_package = current.clone();
-
-                                if let Some((pkg, cgroup_paths)) = res {
-                                    self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
-                                    let _ = stream.fd.write_slice(format!("{}\n", pkg).as_bytes());
-                                } else {
-                                    self.update_cgroup_monitors(&mut reactor, &[]);
-                                }
-
-                                if let Ok(token) = reactor.add(&stream.fd, true, false) {
-                                    // Evict any previous subscription from same UID.
-                                    self.evict_watcher(&mut reactor, caller_uid);
-                                    self.token_to_uid.insert(token, caller_uid);
-                                    self.watchers.insert(caller_uid, (token, stream));
-                                }
-                            }
-                            Command::Unknown => {
-                                let _ = stream.fd.write_slice(b"unknown command\n");
-                            }
+                        if let Ok(token) = reactor.add(&stream.fd, true, false) {
+                            self.pending.insert(token, stream);
                         }
                     }
                 } else if ev.token == signal_token {
@@ -164,6 +130,57 @@ impl Daemon {
                         }
                         if in_ev.wd == wd_foreground {
                             notify_needed = true;
+                        }
+                    }
+                } else if self.pending.contains_key(&ev.token) {
+                    // Pending connection is now readable — dispatch command.
+                    if ev.error || ev.hangup {
+                        self.pending.remove(&ev.token);
+                        continue;
+                    }
+                    if ev.readable {
+                        if let Some(stream) = self.pending.remove(&ev.token) {
+                            let _ = reactor.del(&stream.fd);
+                            let (cmd, caller_uid) = parse_command(&stream);
+
+                            if let Some(allowed) = self.config.daemon_uid {
+                                if caller_uid != allowed {
+                                    continue;
+                                }
+                            }
+
+                            match cmd {
+                                Command::Status => {
+                                    let res = self.resolve_foreground();
+                                    if let Some((pkg, cgroup_paths)) = res {
+                                        self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
+                                        let response = format!("foreground: {}\ncache_entries: {}\n", pkg, self.resolver.cache.mapping.len());
+                                        let _ = stream.fd.write_slice(response.as_bytes());
+                                    } else {
+                                        let _ = stream.fd.write_slice(b"foreground: unknown\ncache_entries: 0\n");
+                                    }
+                                }
+                                Command::Watch => {
+                                    let res = self.resolve_foreground();
+                                    self.last_package = res.as_ref().map(|r| r.0.clone());
+
+                                    if let Some((pkg, cgroup_paths)) = res {
+                                        self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
+                                        let _ = stream.fd.write_slice(format!("{}\n", pkg).as_bytes());
+                                    } else {
+                                        self.update_cgroup_monitors(&mut reactor, &[]);
+                                    }
+
+                                    if let Ok(token) = reactor.add(&stream.fd, true, false) {
+                                        self.evict_watcher(&mut reactor, caller_uid);
+                                        self.token_to_uid.insert(token, caller_uid);
+                                        self.watchers.insert(caller_uid, (token, stream));
+                                    }
+                                }
+                                Command::Unknown => {
+                                    let _ = stream.fd.write_slice(b"unknown command\n");
+                                }
+                            }
                         }
                     }
                 } else if let Some(&uid) = self.token_to_uid.get(&ev.token) {
