@@ -104,7 +104,13 @@ impl Daemon {
         let wd_packages      = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
         let wd_blocklist     = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
         let wd_terminal_apps = inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK)?;
-        let wd_foreground    = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
+        // Skip cgroup.procs watch when binder observer handles foreground events.
+        let binder_drives_events = self.binder_efd.is_some();
+        let wd_foreground = if !binder_drives_events {
+            Some(inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?)
+        } else {
+            None
+        };
 
         // Register binder observer eventfd if available
         if let Some(efd) = &self.binder_efd {
@@ -158,7 +164,7 @@ impl Daemon {
                         if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist || in_ev.wd == wd_terminal_apps {
                             refresh_needed = true;
                         }
-                        if in_ev.wd == wd_foreground {
+                        if Some(in_ev.wd) == wd_foreground {
                             notify_needed = true;
                         }
                     }
@@ -243,7 +249,10 @@ impl Daemon {
                 self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
 
-            if notify_needed {
+            if binder_event {
+                notify_needed = true;
+            } else if notify_needed {
+                // Cgroup dedup: suppress if top-app payload unchanged.
                 let current_v1_payload = std::fs::read_to_string("/dev/cpuset/top-app/cgroup.procs").unwrap_or_default();
                 if current_v1_payload == self.last_v1_payload {
                     notify_needed = false;
@@ -258,9 +267,6 @@ impl Daemon {
                     self.last_v1_payload = current_v1_payload;
                 }
             }
-
-            // Binder observer event bypasses the cgroup dedup check above.
-            if binder_event { notify_needed = true; }
 
             if notify_needed && !self.watchers.is_empty() {
                 let res = self.resolve_foreground();
