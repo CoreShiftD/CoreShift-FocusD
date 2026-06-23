@@ -19,6 +19,10 @@ Communicates over `@coreshift` abstract Unix domain socket.
 - [IPC Protocol](docs/IPC_PROTOCOL.md)
 - [Configuration](docs/CONFIGURATION.md)
 
+## Credits
+
+Binder observer technique — registering as `IProcessObserver` to gate `getFocusedRootTaskInfo` — by **[sehan64](https://github.com/sehan64)**.
+
 ## License
 
 Mozilla Public License 2.0. See [LICENSE](LICENSE).
