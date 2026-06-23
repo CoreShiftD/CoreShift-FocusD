@@ -9,6 +9,7 @@ use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocket
 use coreshift_core::inotify::{self, read_events};
 use coreshift_core::signal::{SignalRuntime, SIGTERM, SIGINT};
 use coreshift_core::CoreError;
+use crate::binder_source::BinderForegroundSource;
 use crate::config::Config;
 use crate::resolver::Resolver;
 use crate::cache::UidCache;
@@ -18,6 +19,7 @@ use crate::socket::{parse_command, Command};
 
 pub struct Daemon {
     config: Config,
+    binder: Option<BinderForegroundSource>,
     resolver: Resolver,
     watchers: HashMap<Token, UnixStreamFd>,
     cgroup_monitors: HashMap<Token, (std::path::PathBuf, coreshift_core::reactor::Fd)>,
@@ -42,8 +44,10 @@ impl Daemon {
         let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);
 
         let resolver = Resolver::new(cache, blocklist, terminal_apps);
+        let binder = BinderForegroundSource::try_open();
         Self {
             config,
+            binder,
             resolver,
             watchers: HashMap::new(),
             cgroup_monitors: HashMap::new(),
@@ -102,8 +106,8 @@ impl Daemon {
                         if count > 16 { break; }
                         match parse_command(&stream) {
                             Command::Status => {
-                                let res = self.resolver.resolve();
-                                if let Some((pkg, _, cgroup_paths)) = res {
+                                let res = self.resolve_foreground();
+                                if let Some((pkg, cgroup_paths)) = res {
                                     self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
                                     let response = format!("foreground: {}\ncache_entries: {}\n", pkg, self.resolver.cache.mapping.len());
                                     let _ = stream.fd.write_slice(response.as_bytes());
@@ -112,11 +116,11 @@ impl Daemon {
                                 }
                             }
                             Command::Watch => {
-                                let res = self.resolver.resolve();
+                                let res = self.resolve_foreground();
                                 let current = res.as_ref().map(|r| r.0.clone());
                                 self.last_package = current.clone();
 
-                                if let Some((pkg, _, cgroup_paths)) = res {
+                                if let Some((pkg, cgroup_paths)) = res {
                                     self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
                                     let response = format!("{}\n", pkg);
                                     let _ = stream.fd.write_slice(response.as_bytes());
@@ -214,7 +218,7 @@ impl Daemon {
             }
 
             if notify_needed && !self.watchers.is_empty() {
-                let res = self.resolver.resolve();
+                let res = self.resolve_foreground();
                 let current_package = res.as_ref().map(|r| r.0.clone());
 
                 if let Some(pkg) = &current_package {
@@ -234,11 +238,10 @@ impl Daemon {
                         self.last_package = current_package;
                     }
                 } else {
-                    // Update internal state even for None so we can detect re-entry to the same app
                     self.last_package = None;
                 }
 
-                if let Some((_, _, cgroup_paths)) = res {
+                if let Some((_, cgroup_paths)) = res {
                     self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
                 } else {
                     self.update_cgroup_monitors(&mut reactor, &[]);
@@ -246,6 +249,17 @@ impl Daemon {
             }
         }
     }
+    // Resolve foreground: binder first (direct, no cgroup walk), cgroup fallback.
+    // Returns (package, cgroup_paths); cgroup_paths is empty on the binder path.
+    fn resolve_foreground(&mut self) -> Option<(String, Vec<std::path::PathBuf>)> {
+        if let Some(binder) = &self.binder {
+            if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
+                return Some((pkg, vec![]));
+            }
+        }
+        self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
+    }
+
     fn update_cgroup_monitors(&mut self, reactor: &mut Reactor, paths: &[std::path::PathBuf]) {
         // Simple logic: we only monitor the current candidates.
         // To keep it efficient, we clear old monitors that aren't in the new set.

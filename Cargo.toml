@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-coreshift-core = "1.1.2"
+coreshift-core = "1.2.0"
 libc = "0.2"

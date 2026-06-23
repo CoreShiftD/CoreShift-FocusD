@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "coreshift-core"
-version = "1.1.2"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcdb16ac1ff2c80fa93ef61756e106cde002c06efc569d5fe915df794418e708"
+checksum = "9e906fc075f2f0cb46ff7d16d0b50a68978e650b76907f2a81e9f83b6ecd9a91"
 dependencies = [
  "libc",
 ]
