@@ -13,7 +13,7 @@ use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConne
 use coreshift_core::reactor::Reactor;
 use coreshift_core::spawn::{Process, ExitStatus};
 use coreshift_core::signal::{SIGTERM, SIGHUP, SIGPIPE, signal_ignore};
-use coreshift_core::process::{fork, ForkResult, setsid, setpgid, redirect_stdio_to_devnull, set_pdeathsig, close_fds_from};
+use coreshift_core::process::{fork, ForkResult, setsid, setpgid, redirect_stdio_to_devnull, set_pdeathsig, close_fds_from, setuid, setgid};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -204,13 +204,19 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(backoff);
             }
             ForkResult::Child => {
-                // Daemon process
+                // Daemon process (listener) — drop to daemon_uid if configured.
                 let _ = set_pdeathsig(SIGTERM);
                 unsafe {
                     signal_ignore(SIGHUP);
                     signal_ignore(SIGPIPE);
                 }
                 close_fds_from(3);
+
+                if let Some(uid) = config.daemon_uid {
+                    if setgid(uid).is_err() || setuid(uid).is_err() {
+                        std::process::exit(1);
+                    }
+                }
 
                 let mut daemon = Daemon::new(config.clone());
                 if let Err(_) = daemon.run() {

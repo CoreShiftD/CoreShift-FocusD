@@ -31,6 +31,8 @@ pub struct Config {
     pub packages_xml_path: String,
     pub socket_name: String,
     pub resolver_mode: ResolverMode,
+    /// If set, daemon drops to this UID after binding the socket.
+    pub daemon_uid: Option<u32>,
 }
 
 impl Default for Config {
@@ -41,6 +43,7 @@ impl Default for Config {
             packages_xml_path: "/data/system/packages.xml".to_string(),
             socket_name: "coreshift".to_string(),
             resolver_mode: ResolverMode::Auto,
+            daemon_uid: None,
         }
     }
 }
@@ -60,9 +63,14 @@ impl Config {
                         "blocklist_path"      => config.blocklist_path = value.trim().to_string(),
                         "packages_xml_path"   => config.packages_xml_path = value.trim().to_string(),
                         "socket_name"         => config.socket_name = value.trim().to_string(),
-                        "resolver"            => {
+                        "resolver"   => {
                             if let Some(m) = ResolverMode::from_str(value.trim()) {
                                 config.resolver_mode = m;
+                            }
+                        }
+                        "daemon_uid" => {
+                            if let Ok(uid) = value.trim().parse::<u32>() {
+                                config.daemon_uid = Some(uid);
                             }
                         }
                         _ => {}
