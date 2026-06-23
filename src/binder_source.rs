@@ -63,11 +63,23 @@ impl BinderForegroundSource {
     /// Returns `None` if the foreground is unknown, the transaction fails, or
     /// the resolved package is on the blocklist.
     pub fn resolve(&self, blocklist: &Blocklist) -> Option<String> {
-        let pkg = self.binder.get_focused_package().ok()??;
-        if blocklist.is_blocked(&pkg) {
-            return None;
+        match self.binder.get_focused_package() {
+            Err(e) => {
+                eprintln!("[binder] get_focused_package error: {}", e);
+                None
+            }
+            Ok(None) => {
+                eprintln!("[binder] get_focused_package returned None (no focused task)");
+                None
+            }
+            Ok(Some(pkg)) => {
+                if blocklist.is_blocked(&pkg) {
+                    eprintln!("[binder] pkg blocked: {}", pkg);
+                    return None;
+                }
+                Some(pkg)
+            }
         }
-        Some(pkg)
     }
 
     /// Query without applying a blocklist.
