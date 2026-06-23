@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use coreshift_core::unix_socket::UnixStreamFd;
+use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixStreamFd};
+use std::io;
 
 pub enum Command {
     Status,
@@ -34,4 +35,16 @@ pub fn parse_command(stream: &UnixStreamFd) -> (Command, u32) {
     };
 
     (cmd, uid)
+}
+
+/// Connect to the FocusD abstract socket, send `cmd`, return the response.
+pub fn request(socket_name: &[u8], cmd: &str) -> io::Result<String> {
+    let addr = UnixSocketAddr::Abstract(socket_name);
+    let stream = connect_unix_stream(addr)?;
+    stream.fd.write_slice(cmd.as_bytes()).map_err(io::Error::other)?;
+    let mut buf = vec![0u8; 512];
+    let n = stream.fd.read_slice(&mut buf)
+        .map_err(io::Error::other)?
+        .unwrap_or(0);
+    String::from_utf8(buf[..n].to_vec()).map_err(io::Error::other)
 }
