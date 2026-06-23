@@ -159,22 +159,35 @@ impl Resolver {
     }
 
     fn select_best_by_oom(&mut self, pids: &[i32]) -> Option<(String, bool)> {
-        let mut best_pid = -1;
+        let mut best_pid = -1i32;
         let mut min_oom = i32::MAX;
+        let mut best_is_terminal = true;
 
         for &pid in pids {
             let oom_path = format!("/proc/{}/oom_score_adj", pid);
             if let Ok(oom_str) = fs::read_to_string(oom_path) {
                 if let Ok(oom) = oom_str.trim().parse::<i32>() {
-                    if oom < min_oom {
+                    let pkg = self.pid_cache.get(&pid).cloned().unwrap_or_default();
+                    let is_terminal = self.terminal_apps.is_terminal(&pkg);
+
+                    let beats = if oom < min_oom {
+                        true
+                    } else if oom == min_oom {
+                        // Non-terminal beats terminal at same OOM; else higher PID wins.
+                        (!is_terminal && best_is_terminal)
+                            || (is_terminal == best_is_terminal && pid > best_pid)
+                    } else {
+                        false
+                    };
+
+                    if beats {
                         min_oom = oom;
                         best_pid = pid;
-                    } else if oom == min_oom && pid > best_pid {
-                        best_pid = pid;
+                        best_is_terminal = is_terminal;
                     }
 
-                    // Short-circuit: 0 or less is definitive on Android
-                    if min_oom <= 0 {
+                    // Short-circuit only when winner is a non-terminal app.
+                    if min_oom <= 0 && !best_is_terminal {
                         break;
                     }
                 }
