@@ -12,7 +12,8 @@ use coreshift_foreground::daemon::Daemon;
 use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
 use coreshift_core::spawn::{Process, ExitStatus};
-use coreshift_core::signal::SIGTERM;
+use coreshift_core::signal::{SIGTERM, SIGHUP, SIGPIPE, signal_ignore};
+use coreshift_core::process::{fork, ForkResult, setsid, setpgid, redirect_stdio_to_devnull, set_pdeathsig, close_fds_from};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -127,55 +128,45 @@ fn print_usage() {
 
 fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     // Double fork to ensure complete detachment
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        return Err("fork failed".into());
-    }
-    if pid > 0 {
-        // Parent CLI waits for middle child to ensure detachment
-        let process = Process::new(pid);
-        let _ = process.wait_blocking();
+    match unsafe { fork()? } {
+        ForkResult::Parent(pid) => {
+            // Parent CLI waits for middle child to ensure detachment
+            let process = Process::new(pid);
+            let _ = process.wait_blocking();
 
-        // Poll for daemon readiness
-        let ready_file = Path::new(&config.cache_dir).join("daemon.ready");
-        let start = Instant::now();
-        while !ready_file.exists() && start.elapsed() < Duration::from_secs(15) {
-            std::thread::sleep(Duration::from_millis(100));
+            // Poll for daemon readiness
+            let ready_file = Path::new(&config.cache_dir).join("daemon.ready");
+            let start = Instant::now();
+            while !ready_file.exists() && start.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            if ready_file.exists() {
+                let _ = fs::remove_file(ready_file);
+            } else {
+                println!("Warning: Daemon start timed out (signaled ready file missing).");
+            }
+
+            return Ok(());
         }
-
-        if ready_file.exists() {
-            let _ = fs::remove_file(ready_file);
-        } else {
-            println!("Warning: Daemon start timed out (signaled ready file missing).");
-        }
-
-        return Ok(());
+        ForkResult::Child => {}
     }
 
     // Middle child process
-    unsafe {
-        libc::setsid();
-        libc::setpgid(0, 0);
-    }
+    let _ = setsid();
+    let _ = setpgid(0, 0);
 
-    let pid = unsafe { libc::fork() };
-    if pid < 0 {
-        std::process::exit(1);
-    }
-    if pid > 0 {
-        // Middle child exits, grandchild (supervisor) is adopted by init
-        std::process::exit(0);
+    match unsafe { fork()? } {
+        ForkResult::Parent(_) => {
+            // Middle child exits, grandchild (supervisor) is adopted by init
+            std::process::exit(0);
+        }
+        ForkResult::Child => {}
     }
 
     // Grandchild process (Supervisor)
     unsafe {
-        // Redirect standard I/O to /dev/null for supervisor
-        if let Ok(dev_null) = fs::OpenOptions::new().read(true).write(true).open("/dev/null") {
-            let fd = std::os::unix::io::AsRawFd::as_raw_fd(&dev_null);
-            libc::dup2(fd, 0);
-            libc::dup2(fd, 1);
-            libc::dup2(fd, 2);
-        }
+        let _ = redirect_stdio_to_devnull();
     }
 
     let mut crash_count = 0;
@@ -183,60 +174,51 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let pid_file = Path::new(&config.cache_dir).join("daemon.pid");
 
     loop {
-        let daemon_pid = unsafe { libc::fork() };
-        if daemon_pid < 0 {
-            std::process::exit(1);
-        }
+        match unsafe { fork()? } {
+            ForkResult::Parent(daemon_pid) => {
+                // Supervisor: write PID and wait
+                let _ = fs::write(&pid_file, daemon_pid.to_string());
 
-        if daemon_pid == 0 {
-            // Daemon process
-            unsafe {
-                // Ensure daemon dies if supervisor dies
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                let process = Process::new(daemon_pid);
+                let status = process.wait_blocking();
+                let _ = fs::remove_file(&pid_file);
 
-                // Ignore SIGHUP and SIGPIPE to prevent death on terminal exit or watcher hangup
-                libc::signal(libc::SIGHUP, libc::SIG_IGN);
-                libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-
-                // Close inherited file descriptors (except stdio)
-                for i in 3..1024 {
-                    libc::close(i);
+                if let Ok(ExitStatus::Exited(0)) = status {
+                    // Clean exit (SIGTERM handler path)
+                    std::process::exit(0);
                 }
+
+                // Crash/Signal exit: handle restart with backoff
+                crash_count += 1;
+                if last_crash_window.elapsed() > Duration::from_secs(10) {
+                    crash_count = 1;
+                    last_crash_window = Instant::now();
+                }
+
+                if crash_count >= 5 {
+                    eprintln!("Daemon crashed 5 times in 10s, giving up.");
+                    std::process::exit(1);
+                }
+
+                let backoff = Duration::from_millis(500 * crash_count);
+                std::thread::sleep(backoff);
             }
+            ForkResult::Child => {
+                // Daemon process
+                let _ = set_pdeathsig(SIGTERM);
+                unsafe {
+                    signal_ignore(SIGHUP);
+                    signal_ignore(SIGPIPE);
+                }
+                close_fds_from(3);
 
-            let mut daemon = Daemon::new(config.clone());
-            if let Err(_) = daemon.run() {
-                std::process::exit(1);
+                let mut daemon = Daemon::new(config.clone());
+                if let Err(_) = daemon.run() {
+                    std::process::exit(1);
+                }
+                std::process::exit(0);
             }
-            std::process::exit(0);
         }
-
-        // Supervisor: write PID and wait
-        let _ = fs::write(&pid_file, daemon_pid.to_string());
-
-        let process = Process::new(daemon_pid);
-        let status = process.wait_blocking();
-        let _ = fs::remove_file(&pid_file);
-
-        if let Ok(ExitStatus::Exited(0)) = status {
-            // Clean exit (SIGTERM handler path)
-            std::process::exit(0);
-        }
-
-        // Crash/Signal exit: handle restart with backoff
-        crash_count += 1;
-        if last_crash_window.elapsed() > Duration::from_secs(10) {
-            crash_count = 1;
-            last_crash_window = Instant::now();
-        }
-
-        if crash_count >= 5 {
-            eprintln!("Daemon crashed 5 times in 10s, giving up.");
-            std::process::exit(1);
-        }
-
-        let backoff = Duration::from_millis(500 * crash_count);
-        std::thread::sleep(backoff);
     }
 }
 

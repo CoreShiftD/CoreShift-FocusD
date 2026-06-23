@@ -7,7 +7,8 @@ use std::mem::MaybeUninit;
 use coreshift_core::reactor::{Reactor, Token};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
 use coreshift_core::inotify::{self, read_events};
-use coreshift_core::signal::{SignalRuntime, SIGTERM, SIGINT};
+use coreshift_core::signal::{SignalRuntime, SignalfdSiginfo, SIGTERM, SIGINT, SIGCHLD};
+use coreshift_core::error::errno;
 use coreshift_core::CoreError;
 use crate::binder_source::BinderForegroundSource;
 use crate::config::{Config, ResolverMode};
@@ -63,13 +64,13 @@ impl Daemon {
         // Guard: Check if daemon is already running
         let socket_addr = UnixSocketAddr::Abstract(self.config.socket_name.as_bytes());
         if coreshift_core::unix_socket::connect_unix_stream(socket_addr).is_ok() {
-            return Err(CoreError::sys(libc::EADDRINUSE, "bind"));
+            return Err(CoreError::sys(errno::EADDRINUSE, "bind"));
         }
 
         let mut reactor = Reactor::new()?;
 
         // Setup Robust Signal Handling via signalfd
-        let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT, libc::SIGCHLD])?;
+        let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT, SIGCHLD])?;
         SignalRuntime::block_current_thread(&mask)?;
         let signal_fd = SignalRuntime::signalfd_new(&mask)?;
         let signal_token = reactor.add(&signal_fd, true, false)?;
@@ -138,11 +139,11 @@ impl Daemon {
                         }
                     }
                 } else if ev.token == signal_token {
-                    let mut sig_info = MaybeUninit::<libc::signalfd_siginfo>::uninit();
+                    let mut sig_info = MaybeUninit::<SignalfdSiginfo>::uninit();
                     let buf = unsafe {
                         std::slice::from_raw_parts_mut(
                             sig_info.as_mut_ptr() as *mut u8,
-                            std::mem::size_of::<libc::signalfd_siginfo>(),
+                            std::mem::size_of::<SignalfdSiginfo>(),
                         )
                     };
                     while let Ok(Some(_)) = signal_fd.read_slice(buf) {
