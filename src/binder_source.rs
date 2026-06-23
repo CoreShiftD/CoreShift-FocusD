@@ -10,7 +10,7 @@
 //!
 //! ## Tx code resolution order
 //!
-//! 1. `/data/local/tmp/watcher_tx_code.txt` (written by fgw if present).
+//! 1. `/data/local/tmp/coreshift/tx_code.txt` (written by fgw if present).
 //! 2. `ro.build.version.sdk` → known-code table.
 //! 3. Linear probe over a narrow SDK-version-bound window.
 //!
