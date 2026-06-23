@@ -13,7 +13,7 @@ use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConne
 use coreshift_core::reactor::Reactor;
 use coreshift_core::spawn::{Process, ExitStatus};
 use coreshift_core::signal::{SIGTERM, SIGHUP, SIGPIPE, signal_ignore};
-use coreshift_core::process::{fork, ForkResult, setsid, setpgid, redirect_stdio_to_devnull, set_pdeathsig, close_fds_from};
+use coreshift_core::process::{fork, ForkResult, setsid, setpgid, redirect_stdio_to_devnull, set_pdeathsig, close_fds_from, redirect_fd_to};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -211,6 +211,14 @@ fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
                     signal_ignore(SIGPIPE);
                 }
                 close_fds_from(3);
+
+                // Redirect stderr to log file so daemon errors are visible.
+                let log_path = format!("{}/daemon.log", config.cache_dir);
+                if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+                    use std::os::unix::io::IntoRawFd;
+                    let fd = f.into_raw_fd();
+                    unsafe { redirect_fd_to(fd, 2) };
+                }
 
                 let mut daemon = Daemon::new(config.clone());
                 if let Err(_) = daemon.run() {

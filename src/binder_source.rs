@@ -41,7 +41,20 @@ impl BinderForegroundSource {
     pub fn try_open() -> Option<Self> {
         match ActivityManagerBinder::open() {
             Ok(binder) => Some(Self { binder }),
-            Err(_) => None,
+            Err(e) => {
+                eprintln!("[binder] open failed: {}", e);
+                None
+            }
+        }
+    }
+
+    pub fn try_get_focused(&self) -> Option<String> {
+        match self.binder.get_focused_package() {
+            Ok(pkg) => pkg,
+            Err(e) => {
+                eprintln!("[binder] get_focused_package failed: {}", e);
+                None
+            }
         }
     }
 
