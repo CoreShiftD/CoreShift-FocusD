@@ -101,6 +101,12 @@ impl Daemon {
                         count += 1;
                         if count > 16 { break; }
                         let (cmd, caller_uid) = parse_command(&stream);
+                        // Reject callers not matching daemon_uid allowlist.
+                        if let Some(allowed) = self.config.daemon_uid {
+                            if caller_uid != allowed {
+                                continue;
+                            }
+                        }
                         match cmd {
                             Command::Status => {
                                 let res = self.resolve_foreground();
