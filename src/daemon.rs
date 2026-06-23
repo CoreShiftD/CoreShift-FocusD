@@ -326,9 +326,9 @@ impl Daemon {
             ResolverMode::Auto => {
                 if !for_status {
                     if let Some(binder) = &self.binder {
-                        if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
-                            return Some((pkg, vec![]));
-                        }
+                        // Binder registered — use it exclusively for event-driven path.
+                        // Cgroup is not consulted; stale cgroup state can't pollute result.
+                        return binder.resolve(&self.resolver.blocklist).map(|pkg| (pkg, vec![]));
                     }
                 }
                 self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
