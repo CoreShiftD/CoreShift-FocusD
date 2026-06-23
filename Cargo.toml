@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-coreshift-core = "1.2.7"
+coreshift-core = "1.2.8"

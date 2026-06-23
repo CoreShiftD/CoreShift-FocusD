@@ -180,7 +180,7 @@ impl Daemon {
 
                             match cmd {
                                 Command::Status => {
-                                    let res = self.resolve_foreground();
+                                    let res = self.resolve_foreground_inner(true);
                                     if let Some((pkg, cgroup_paths)) = res {
                                         self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
                                         let response = format!("foreground: {}\ncache_entries: {}\n", pkg, self.resolver.cache.mapping.len());
@@ -304,17 +304,30 @@ impl Daemon {
     }
 
     fn resolve_foreground(&mut self) -> Option<(String, Vec<std::path::PathBuf>)> {
+        self.resolve_foreground_inner(false)
+    }
+
+    // for_status: when true, skip direct binder query and use cgroup instead.
+    // getFocusedRootTaskInfo only returns reliable data when triggered by an
+    // observer callback; polling it directly (for STATUS) yields stale results.
+    fn resolve_foreground_inner(&mut self, for_status: bool) -> Option<(String, Vec<std::path::PathBuf>)> {
         match self.config.resolver_mode {
             ResolverMode::Cgroup => {
                 self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
             }
             ResolverMode::Binder => {
+                if for_status {
+                    // Fall through to cgroup for one-shot status queries.
+                    return self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths));
+                }
                 self.binder.as_ref()?.resolve(&self.resolver.blocklist).map(|pkg| (pkg, vec![]))
             }
             ResolverMode::Auto => {
-                if let Some(binder) = &self.binder {
-                    if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
-                        return Some((pkg, vec![]));
+                if !for_status {
+                    if let Some(binder) = &self.binder {
+                        if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
+                            return Some((pkg, vec![]));
+                        }
                     }
                 }
                 self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
