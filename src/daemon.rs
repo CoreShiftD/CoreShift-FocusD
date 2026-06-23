@@ -277,17 +277,7 @@ impl Daemon {
                 self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
             }
             ResolverMode::Binder => {
-                match &self.binder {
-                    None => {
-                        eprintln!("[daemon] binder is None (try_open failed at startup)");
-                        return None;
-                    }
-                    Some(binder) => {
-                        let result = binder.resolve(&self.resolver.blocklist);
-                        eprintln!("[daemon] binder.resolve = {:?}", result);
-                        return result.map(|pkg| (pkg, vec![]));
-                    }
-                }
+                self.binder.as_ref()?.resolve(&self.resolver.blocklist).map(|pkg| (pkg, vec![]))
             }
             ResolverMode::Auto => {
                 if let Some(binder) = &self.binder {
