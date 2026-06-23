@@ -45,12 +45,13 @@ impl Daemon {
         cache.load_or_refresh(&config.packages_xml_path);
 
         let blocklist_defaults = Blocklist::resolve_defaults();
+        let launcher_pkg = Blocklist::resolve_launcher();
         let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), false);
 
         let terminal_apps_path = format!("{}/terminal_apps.conf", config.cache_dir);
         let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);
 
-        let resolver = Resolver::new(cache, blocklist, terminal_apps);
+        let resolver = Resolver::new(cache, blocklist, terminal_apps, launcher_pkg);
 
         let (binder, binder_efd) = match BinderForegroundSource::try_open() {
             Some((src, Some(raw_efd))) => {

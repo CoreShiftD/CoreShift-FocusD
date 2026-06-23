@@ -2,6 +2,13 @@
 name = "coreshift-foreground"
 version = "0.1.0"
 edition = "2021"
+description = "Android foreground package resolution daemon and CLI"
+license = "MPL-2.0"
+repository = "https://github.com/CoreShiftD/CoreShift-FocusD"
+homepage = "https://github.com/CoreShiftD/CoreShift-FocusD"
+readme = "README.md"
+keywords = ["android", "foreground", "cgroup", "binder", "daemon"]
+categories = ["os::linux-apis"]
 
 [dependencies]
 coreshift-core = "1.2.8"

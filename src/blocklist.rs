@@ -111,16 +111,23 @@ impl Blocklist {
         false
     }
 
+    /// Resolve the default HOME launcher package name without blocking it.
+    /// Used by the resolver to deprioritize the launcher in OOM tie-breaking
+    /// rather than filtering it out entirely.
+    pub fn resolve_launcher() -> Option<String> {
+        let output = run_command("/system/bin/cmd", &[
+            "package", "resolve-activity",
+            "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.HOME",
+        ]).ok()?;
+        let s = String::from_utf8_lossy(&output.stdout);
+        s.lines()
+            .find_map(|line| line.trim().strip_prefix("packageName="))
+            .map(str::to_owned)
+    }
+
     pub fn resolve_defaults() -> BTreeSet<String> {
         let mut defaults = BTreeSet::new();
-
-        // Resolve Launcher
-        if let Ok(output) = run_command("/system/bin/cmd", &["package", "resolve-activity", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"]) {
-            let s = String::from_utf8_lossy(&output.stdout);
-            if let Some(package) = s.lines().find_map(|line| line.trim().strip_prefix("packageName=")) {
-                defaults.insert(package.to_string());
-            }
-        }
 
         // Resolve Keyboard (IME)
         if let Ok(output) = run_command("/system/bin/cmd", &["settings", "get", "secure", "default_input_method"]) {

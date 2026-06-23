@@ -13,17 +13,19 @@ pub struct Resolver {
     pub cache: UidCache,
     pub blocklist: Blocklist,
     pub terminal_apps: TerminalApps,
+    pub launcher_pkg: Option<String>,
     pid_cache: std::collections::HashMap<i32, String>,
     cgroup_v2_roots: Vec<std::path::PathBuf>,
 }
 
 impl Resolver {
-    pub fn new(cache: UidCache, blocklist: Blocklist, terminal_apps: TerminalApps) -> Self {
+    pub fn new(cache: UidCache, blocklist: Blocklist, terminal_apps: TerminalApps, launcher_pkg: Option<String>) -> Self {
         let cgroup_v2_roots = Self::discover_cgroup_v2_roots();
         Self {
             cache,
             blocklist,
             terminal_apps,
+            launcher_pkg,
             pid_cache: std::collections::HashMap::new(),
             cgroup_v2_roots,
         }
@@ -161,21 +163,24 @@ impl Resolver {
     fn select_best_by_oom(&mut self, pids: &[i32]) -> Option<(String, bool)> {
         let mut best_pid = -1i32;
         let mut min_oom = i32::MAX;
-        let mut best_is_terminal = true;
+        // true when current winner is deprioritized (terminal or launcher)
+        let mut best_is_low_prio = true;
 
         for &pid in pids {
             let oom_path = format!("/proc/{}/oom_score_adj", pid);
             if let Ok(oom_str) = fs::read_to_string(oom_path) {
                 if let Ok(oom) = oom_str.trim().parse::<i32>() {
                     let pkg = self.pid_cache.get(&pid).cloned().unwrap_or_default();
-                    let is_terminal = self.terminal_apps.is_terminal(&pkg);
+                    let is_low_prio = self.terminal_apps.is_terminal(&pkg)
+                        || self.launcher_pkg.as_deref() == Some(pkg.as_str());
 
                     let beats = if oom < min_oom {
                         true
                     } else if oom == min_oom {
-                        // Non-terminal beats terminal at same OOM; else higher PID wins.
-                        (!is_terminal && best_is_terminal)
-                            || (is_terminal == best_is_terminal && pid > best_pid)
+                        // Real app beats deprioritized (terminal/launcher) at same OOM.
+                        // Among equals, higher PID wins.
+                        (!is_low_prio && best_is_low_prio)
+                            || (is_low_prio == best_is_low_prio && pid > best_pid)
                     } else {
                         false
                     };
@@ -183,11 +188,11 @@ impl Resolver {
                     if beats {
                         min_oom = oom;
                         best_pid = pid;
-                        best_is_terminal = is_terminal;
+                        best_is_low_prio = is_low_prio;
                     }
 
-                    // Short-circuit only when winner is a non-terminal app.
-                    if min_oom <= 0 && !best_is_terminal {
+                    // Short-circuit only when winner is a real (non-deprioritized) app.
+                    if min_oom <= 0 && !best_is_low_prio {
                         break;
                     }
                 }
