@@ -5,12 +5,32 @@
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolverMode {
+    #[default]
+    Auto,   // binder first, cgroup fallback
+    Binder, // force binder only
+    Cgroup, // force cgroup, skip binder
+}
+
+impl ResolverMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "auto"   => Some(Self::Auto),
+            "binder" => Some(Self::Binder),
+            "cgroup" => Some(Self::Cgroup),
+            _        => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub cache_dir: String,
     pub blocklist_path: String,
     pub packages_xml_path: String,
     pub socket_name: String,
+    pub resolver_mode: ResolverMode,
 }
 
 impl Default for Config {
@@ -20,6 +40,7 @@ impl Default for Config {
             blocklist_path: "/data/local/tmp/coreshift/blocklist.conf".to_string(),
             packages_xml_path: "/data/system/packages.xml".to_string(),
             socket_name: "coreshift".to_string(),
+            resolver_mode: ResolverMode::Auto,
         }
     }
 }
@@ -35,10 +56,15 @@ impl Config {
                 }
                 if let Some((key, value)) = line.split_once('=') {
                     match key.trim() {
-                        "cache_dir" => config.cache_dir = value.trim().to_string(),
-                        "blocklist_path" => config.blocklist_path = value.trim().to_string(),
-                        "packages_xml_path" => config.packages_xml_path = value.trim().to_string(),
-                        "socket_name" => config.socket_name = value.trim().to_string(),
+                        "cache_dir"           => config.cache_dir = value.trim().to_string(),
+                        "blocklist_path"      => config.blocklist_path = value.trim().to_string(),
+                        "packages_xml_path"   => config.packages_xml_path = value.trim().to_string(),
+                        "socket_name"         => config.socket_name = value.trim().to_string(),
+                        "resolver"            => {
+                            if let Some(m) = ResolverMode::from_str(value.trim()) {
+                                config.resolver_mode = m;
+                            }
+                        }
                         _ => {}
                     }
                 }

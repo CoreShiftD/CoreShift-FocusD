@@ -10,7 +10,7 @@ use coreshift_core::inotify::{self, read_events};
 use coreshift_core::signal::{SignalRuntime, SIGTERM, SIGINT};
 use coreshift_core::CoreError;
 use crate::binder_source::BinderForegroundSource;
-use crate::config::Config;
+use crate::config::{Config, ResolverMode};
 use crate::resolver::Resolver;
 use crate::cache::UidCache;
 use crate::blocklist::Blocklist;
@@ -249,17 +249,25 @@ impl Daemon {
             }
         }
     }
-    // Resolve foreground: binder first (direct, no cgroup walk), cgroup fallback.
-    // Returns (package, cgroup_paths); cgroup_paths is empty on the binder path.
-    // Binder returns the focused Activity package, so terminal child processes
-    // (bash, vim, etc.) are invisible to it — no special terminal handling needed.
     fn resolve_foreground(&mut self) -> Option<(String, Vec<std::path::PathBuf>)> {
-        if let Some(binder) = &self.binder {
-            if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
-                return Some((pkg, vec![]));
+        match self.config.resolver_mode {
+            ResolverMode::Cgroup => {
+                self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
+            }
+            ResolverMode::Binder => {
+                let binder = self.binder.as_ref()?;
+                let pkg = binder.resolve(&self.resolver.blocklist)?;
+                Some((pkg, vec![]))
+            }
+            ResolverMode::Auto => {
+                if let Some(binder) = &self.binder {
+                    if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
+                        return Some((pkg, vec![]));
+                    }
+                }
+                self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
             }
         }
-        self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))
     }
 
     fn update_cgroup_monitors(&mut self, reactor: &mut Reactor, paths: &[std::path::PathBuf]) {

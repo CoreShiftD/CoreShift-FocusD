@@ -7,7 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use coreshift_foreground::config::Config;
+use coreshift_foreground::config::{Config, ResolverMode};
 use coreshift_foreground::daemon::Daemon;
 use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
@@ -27,7 +27,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args[1].as_str() {
         "daemon" => {
-            // Check if daemon is already running
+            let mut config = config;
+            for arg in &args[2..] {
+                if let Some(val) = arg.strip_prefix("--resolver=") {
+                    match ResolverMode::from_str(val) {
+                        Some(m) => config.resolver_mode = m,
+                        None => {
+                            eprintln!("Unknown resolver '{}'. Use: auto, binder, cgroup", val);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             let addr = UnixSocketAddr::Abstract(config.socket_name.as_bytes());
             if connect_unix_stream(addr).is_ok() {
                 println!("Daemon is already running.");
@@ -104,9 +115,10 @@ fn send_command(socket_name: &str, cmd: &str) -> Result<(), Box<dyn std::error::
 }
 
 fn print_usage() {
-    println!("Usage: coreshift-foreground <command>");
+    println!("Usage: coreshift-foreground <command> [options]");
     println!("Commands:");
-    println!("  daemon   Start the foreground resolution daemon (supervised)");
+    println!("  daemon [--resolver=auto|binder|cgroup]");
+    println!("           Start the foreground resolution daemon (supervised)");
     println!("  stop     Stop the running daemon");
     println!("  restart  Restart the daemon");
     println!("  status   Show current foreground package");
