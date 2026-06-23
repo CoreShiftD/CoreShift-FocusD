@@ -251,10 +251,14 @@ impl Daemon {
     }
     // Resolve foreground: binder first (direct, no cgroup walk), cgroup fallback.
     // Returns (package, cgroup_paths); cgroup_paths is empty on the binder path.
+    // Terminal apps always fall through to cgroup — binder can't see child processes
+    // running inside a terminal emulator.
     fn resolve_foreground(&mut self) -> Option<(String, Vec<std::path::PathBuf>)> {
         if let Some(binder) = &self.binder {
             if let Some(pkg) = binder.resolve(&self.resolver.blocklist) {
-                return Some((pkg, vec![]));
+                if !self.resolver.terminal_apps.is_terminal(&pkg) {
+                    return Some((pkg, vec![]));
+                }
             }
         }
         self.resolver.resolve().map(|(pkg, _, paths)| (pkg, paths))

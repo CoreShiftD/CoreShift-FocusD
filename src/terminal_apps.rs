@@ -18,6 +18,7 @@ impl TerminalApps {
             "com.termux",
             "com.termius.client",
             "com.server.auditor.ssh.client",
+            "com.droidspaces.app",
             "bin.mt*",
         ];
 
