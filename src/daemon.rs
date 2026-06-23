@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
-use coreshift_core::reactor::{Reactor, Token};
+use coreshift_core::reactor::{Reactor, Token, Fd};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
 use coreshift_core::inotify::{self, read_events};
 use coreshift_core::signal::{SignalRuntime, SignalfdSiginfo, SIGTERM, SIGINT, SIGCHLD};
@@ -21,6 +21,9 @@ use crate::socket::{parse_command, Command};
 pub struct Daemon {
     config: Config,
     binder: Option<BinderForegroundSource>,
+    // Owned eventfd from IProcessObserver registration (None = no observer).
+    binder_efd: Option<Fd>,
+    binder_token: Option<Token>,
     resolver: Resolver,
     // Pending accepted connections waiting for a readable command.
     pending: HashMap<Token, UnixStreamFd>,
@@ -28,7 +31,7 @@ pub struct Daemon {
     watchers: HashMap<u32, (Token, UnixStreamFd)>,
     // Reverse map: watcher reactor token → caller UID.
     token_to_uid: HashMap<Token, u32>,
-    cgroup_monitors: HashMap<Token, (std::path::PathBuf, coreshift_core::reactor::Fd)>,
+    cgroup_monitors: HashMap<Token, (std::path::PathBuf, Fd)>,
     last_v1_payload: String,
     last_max_pid: i32,
     last_package: Option<String>,
@@ -48,10 +51,21 @@ impl Daemon {
         let terminal_apps = TerminalApps::load_or_create(&terminal_apps_path);
 
         let resolver = Resolver::new(cache, blocklist, terminal_apps);
-        let binder = BinderForegroundSource::try_open();
+
+        let (binder, binder_efd) = match BinderForegroundSource::try_open() {
+            Some((src, Some(raw_efd))) => {
+                let fd = unsafe { Fd::from_owned_raw_fd(raw_efd, "binder.eventfd").ok() };
+                (Some(src), fd)
+            }
+            Some((src, None)) => (Some(src), None),
+            None => (None, None),
+        };
+
         Self {
             config,
             binder,
+            binder_efd,
+            binder_token: None,
             resolver,
             pending: HashMap::new(),
             watchers: HashMap::new(),
@@ -91,11 +105,19 @@ impl Daemon {
         let wd_terminal_apps = inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK)?;
         let wd_foreground    = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
 
+        // Register binder observer eventfd if available
+        if let Some(efd) = &self.binder_efd {
+            if let Ok(token) = reactor.add(efd, true, false) {
+                self.binder_token = Some(token);
+            }
+        }
+
         let mut events = Vec::new();
         loop {
             reactor.wait(&mut events, 64, -1)?;
             let mut refresh_needed = false;
             let mut notify_needed  = false;
+            let mut binder_event   = false;
 
             for ev in &events {
                 if ev.token == socket_token {
@@ -122,6 +144,13 @@ impl Daemon {
                             return Ok(());
                         }
                     }
+                } else if Some(ev.token) == self.binder_token {
+                    // Drain the eventfd counter — value doesn't matter
+                    if let Some(efd) = &self.binder_efd {
+                        let mut buf = [0u8; 8];
+                        let _ = efd.read_slice(&mut buf);
+                    }
+                    binder_event = true;
                 } else if ev.token == inotify_token {
                     let in_events = read_events(&inotify_fd)?;
                     for in_ev in in_events {
@@ -228,6 +257,9 @@ impl Daemon {
                     self.last_v1_payload = current_v1_payload;
                 }
             }
+
+            // Binder observer event bypasses the cgroup dedup check above.
+            if binder_event { notify_needed = true; }
 
             if notify_needed && !self.watchers.is_empty() {
                 let res = self.resolve_foreground();
