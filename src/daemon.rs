@@ -22,7 +22,10 @@ pub struct Daemon {
     config: Config,
     binder: Option<BinderForegroundSource>,
     resolver: Resolver,
-    watchers: HashMap<Token, UnixStreamFd>,
+    // Keyed by caller UID — same UID reconnecting replaces old subscription.
+    watchers: HashMap<u32, (Token, UnixStreamFd)>,
+    // Reverse map: reactor token → caller UID, for epoll event dispatch.
+    token_to_uid: HashMap<Token, u32>,
     cgroup_monitors: HashMap<Token, (std::path::PathBuf, coreshift_core::reactor::Fd)>,
     last_v1_payload: String,
     last_max_pid: i32,
@@ -37,8 +40,6 @@ impl Daemon {
         cache.load_or_refresh(&config.packages_xml_path);
 
         let blocklist_defaults = Blocklist::resolve_defaults();
-
-        // Don't persist on startup unless the file is missing to avoid triggering an immediate inotify reload
         let blocklist = Blocklist::load_or_create(&config.blocklist_path, blocklist_defaults.clone(), false);
 
         let terminal_apps_path = format!("{}/terminal_apps.conf", config.cache_dir);
@@ -51,6 +52,7 @@ impl Daemon {
             binder,
             resolver,
             watchers: HashMap::new(),
+            token_to_uid: HashMap::new(),
             cgroup_monitors: HashMap::new(),
             last_v1_payload: String::new(),
             last_max_pid: 0,
@@ -61,7 +63,6 @@ impl Daemon {
     }
 
     pub fn run(&mut self) -> Result<(), CoreError> {
-        // Guard: Check if daemon is already running
         let socket_addr = UnixSocketAddr::Abstract(self.config.socket_name.as_bytes());
         if coreshift_core::unix_socket::connect_unix_stream(socket_addr).is_ok() {
             return Err(CoreError::sys(errno::EADDRINUSE, "bind"));
@@ -69,43 +70,38 @@ impl Daemon {
 
         let mut reactor = Reactor::new()?;
 
-        // Setup Robust Signal Handling via signalfd
         let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT, SIGCHLD])?;
         SignalRuntime::block_current_thread(&mask)?;
         let signal_fd = SignalRuntime::signalfd_new(&mask)?;
         let signal_token = reactor.add(&signal_fd, true, false)?;
 
-        // Setup Socket
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
 
-        // Signal readiness to CLI
         let ready_file = format!("{}/daemon.ready", self.config.cache_dir);
         let _ = std::fs::write(ready_file, "");
 
         let socket_token = reactor.add(&listener.fd, true, false)?;
 
-        // Setup Inotify using official setup helper
         let (inotify_fd, inotify_token) = reactor.setup_inotify()?;
-
-        let wd_packages = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
-        let wd_blocklist = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
+        let wd_packages      = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
+        let wd_blocklist     = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
         let wd_terminal_apps = inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK)?;
-        let wd_foreground = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
+        let wd_foreground    = inotify::add_watch(&inotify_fd, "/dev/cpuset/top-app/cgroup.procs", inotify::MODIFY_MASK)?;
 
         let mut events = Vec::new();
         loop {
             reactor.wait(&mut events, 64, -1)?;
             let mut refresh_needed = false;
-            let mut notify_needed = false;
+            let mut notify_needed  = false;
 
             for ev in &events {
                 if ev.token == socket_token {
-                    // Drain the edge-triggered listener
                     let mut count = 0;
                     while let Ok(Some(stream)) = listener.accept() {
                         count += 1;
                         if count > 16 { break; }
-                        match parse_command(&stream) {
+                        let (cmd, caller_uid) = parse_command(&stream);
+                        match cmd {
                             Command::Status => {
                                 let res = self.resolve_foreground();
                                 if let Some((pkg, cgroup_paths)) = res {
@@ -123,14 +119,16 @@ impl Daemon {
 
                                 if let Some((pkg, cgroup_paths)) = res {
                                     self.update_cgroup_monitors(&mut reactor, &cgroup_paths);
-                                    let response = format!("{}\n", pkg);
-                                    let _ = stream.fd.write_slice(response.as_bytes());
+                                    let _ = stream.fd.write_slice(format!("{}\n", pkg).as_bytes());
                                 } else {
                                     self.update_cgroup_monitors(&mut reactor, &[]);
                                 }
 
                                 if let Ok(token) = reactor.add(&stream.fd, true, false) {
-                                    self.watchers.insert(token, stream);
+                                    // Evict any previous subscription from same UID.
+                                    self.evict_watcher(&mut reactor, caller_uid);
+                                    self.token_to_uid.insert(token, caller_uid);
+                                    self.watchers.insert(caller_uid, (token, stream));
                                 }
                             }
                             Command::Unknown => {
@@ -162,20 +160,15 @@ impl Daemon {
                             notify_needed = true;
                         }
                     }
-                } else if self.watchers.contains_key(&ev.token) {
+                } else if let Some(&uid) = self.token_to_uid.get(&ev.token) {
                     if ev.error || ev.readable || ev.hangup {
-                        // Client closed or sent something else, remove it
-                        if let Some(stream) = self.watchers.remove(&ev.token) {
-                            let _ = reactor.del(&stream.fd);
-                        }
+                        self.evict_watcher(&mut reactor, uid);
                     }
                 } else if let Some((cgroup_path, _)) = self.cgroup_monitors.get(&ev.token) {
                     if ev.priority {
-                        // Cgroup v2 events changed (likely populated 0)
                         let events_path = cgroup_path.join("cgroup.events");
                         if let Ok(content) = std::fs::read_to_string(events_path) {
                             if content.contains("populated 0") {
-                                // Process died or moved, clear the pid cache for safety
                                 self.resolver.clear_pid_cache();
                             }
                         }
@@ -188,28 +181,23 @@ impl Daemon {
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
 
                 let mut dynamic_changed = false;
-                // Only re-resolve dynamic defaults if fingerprint changed
                 if self.resolver.cache.fingerprint != old_fp {
                     self.blocklist_defaults = Blocklist::resolve_defaults();
                     dynamic_changed = true;
                 }
 
-                // Only persist if dynamic defaults actually changed to avoid inotify loop on manual config edits
                 self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone(), dynamic_changed);
                 self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
 
             if notify_needed {
-                // Check if CPUSet payload actually changed
                 let current_v1_payload = std::fs::read_to_string("/dev/cpuset/top-app/cgroup.procs").unwrap_or_default();
                 if current_v1_payload == self.last_v1_payload {
                     notify_needed = false;
                 } else {
-                    // Detect PID wrap-around: if max PID dropped significantly, clear cache
                     let current_max_pid = current_v1_payload.lines()
                         .filter_map(|l| l.trim().parse::<i32>().ok())
                         .max().unwrap_or(0);
-
                     if current_max_pid < self.last_max_pid / 2 {
                         self.resolver.clear_pid_cache();
                     }
@@ -225,16 +213,18 @@ impl Daemon {
                 if let Some(pkg) = &current_package {
                     if current_package != self.last_package {
                         let response = format!("{}\n", pkg);
-                        let mut broken = Vec::new();
-                        for (token, stream) in &self.watchers {
-                            if stream.fd.write_slice(response.as_bytes()).is_err() {
-                                broken.push(*token);
-                            }
-                        }
-                        for token in broken {
-                            if let Some(stream) = self.watchers.remove(&token) {
-                                let _ = reactor.del(&stream.fd);
-                            }
+                        let broken: Vec<u32> = self.watchers
+                            .iter()
+                            .filter_map(|(&uid, (_, stream))| {
+                                if stream.fd.write_slice(response.as_bytes()).is_err() {
+                                    Some(uid)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        for uid in broken {
+                            self.evict_watcher(&mut reactor, uid);
                         }
                         self.last_package = current_package;
                     }
@@ -250,6 +240,14 @@ impl Daemon {
             }
         }
     }
+
+    fn evict_watcher(&mut self, reactor: &mut Reactor, uid: u32) {
+        if let Some((token, stream)) = self.watchers.remove(&uid) {
+            self.token_to_uid.remove(&token);
+            let _ = reactor.del(&stream.fd);
+        }
+    }
+
     fn resolve_foreground(&mut self) -> Option<(String, Vec<std::path::PathBuf>)> {
         match self.config.resolver_mode {
             ResolverMode::Cgroup => {
@@ -272,8 +270,6 @@ impl Daemon {
     }
 
     fn update_cgroup_monitors(&mut self, reactor: &mut Reactor, paths: &[std::path::PathBuf]) {
-        // Simple logic: we only monitor the current candidates.
-        // To keep it efficient, we clear old monitors that aren't in the new set.
         let new_set: std::collections::HashSet<_> = paths.iter().collect();
         let mut to_remove = Vec::new();
 
@@ -294,9 +290,7 @@ impl Daemon {
             if !self.cgroup_monitors.values().any(|(p, _)| p == path) {
                 if let Ok(file) = std::fs::File::open(&events_path) {
                     use std::os::unix::io::AsRawFd;
-                    // Note: coreshift-core Fd::from_owned_raw_fd transfers ownership
                     if let Ok(fd) = unsafe { coreshift_core::reactor::Fd::from_owned_raw_fd(file.as_raw_fd(), "cgroup.events") } {
-                        // Forget the file so it doesn't close yet
                         std::mem::forget(file);
                         if let Ok(token) = reactor.add_priority(&fd) {
                             self.cgroup_monitors.insert(token, (path.clone(), fd));
