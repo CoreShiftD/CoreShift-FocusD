@@ -11,4 +11,4 @@ keywords = ["android", "foreground", "cgroup", "binder", "daemon"]
 categories = ["os::linux-apis"]
 
 [dependencies]
-coreshift-core = "1.2.8"
+coreshift-core = "1.2.9"
