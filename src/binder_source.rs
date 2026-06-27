@@ -5,8 +5,6 @@
 use coreshift_core::binder::ActivityManagerBinder;
 use crate::blocklist::Blocklist;
 
-const TX_CACHE: &str = "/data/local/tmp/coreshift/tx_code.txt";
-
 pub struct BinderForegroundSource {
     binder: ActivityManagerBinder,
 }
@@ -23,12 +21,9 @@ impl BinderForegroundSource {
     ///
     /// Returns `None` if binder is completely unavailable.
     pub fn try_open() -> Option<(Self, Option<i32>)> {
-        match ActivityManagerBinder::open_with_observer(TX_CACHE) {
+        match ActivityManagerBinder::open_with_observer() {
             Ok((binder, efd)) => Some((Self { binder }, Some(efd))),
-            Err(_) => {
-                ActivityManagerBinder::open(TX_CACHE).ok()
-                    .map(|binder| (Self { binder }, None))
-            }
+            Err(_) => ActivityManagerBinder::open().ok().map(|binder| (Self { binder }, None)),
         }
     }
 

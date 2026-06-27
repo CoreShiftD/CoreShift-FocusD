@@ -15,7 +15,6 @@
 
 | Path | Description |
 |------|-------------|
-| `<cache_dir>/tx_code.txt` | Binder transaction code cache (`observer query api fg`) |
 | `<cache_dir>/daemon.log` | Daemon stderr log |
 | `<cache_dir>/daemon.pid` | PID of the supervised daemon process |
 | `<cache_dir>/blocklist.conf` | Editable blocklist; inotify-reloaded live |

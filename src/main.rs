@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use coreshift_foreground::config::{Config, ResolverMode};
 use coreshift_foreground::daemon::Daemon;
-use coreshift_core::unix_socket::{connect_unix_stream, UnixSocketAddr, UnixConnectResult};
+use coreshift_core::unix_socket::{connect_unix_stream, connect_unix_stream_named, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
 use coreshift_core::spawn::{Process, ExitStatus};
 use coreshift_core::signal::{SIGTERM, SIGHUP, SIGPIPE, signal_ignore};
@@ -82,11 +82,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn send_command(socket_name: &str, cmd: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = UnixSocketAddr::Abstract(socket_name.as_bytes());
-    let stream = match connect_unix_stream(addr)? {
-        UnixConnectResult::Connected(s) => s,
-        UnixConnectResult::InProgress(_) => {
-            return Err("Connection in progress".into());
+    let remote = UnixSocketAddr::Abstract(socket_name.as_bytes());
+    let stream = if cmd == "watch" {
+        let consumer_name = format!("{socket_name}_consumer");
+        match connect_unix_stream_named(remote, UnixSocketAddr::Abstract(consumer_name.as_bytes()))? {
+            UnixConnectResult::Connected(s) => s,
+            UnixConnectResult::InProgress(_) => return Err("Connection in progress".into()),
+        }
+    } else {
+        match connect_unix_stream(remote)? {
+            UnixConnectResult::Connected(s) => s,
+            UnixConnectResult::InProgress(_) => return Err("Connection in progress".into()),
         }
     };
 
