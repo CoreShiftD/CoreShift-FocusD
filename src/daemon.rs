@@ -8,7 +8,6 @@ use coreshift_core::reactor::{Reactor, Token, Fd};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
 use coreshift_core::inotify::{self, read_events};
 use coreshift_core::signal::{SignalRuntime, SignalfdSiginfo, SIGTERM, SIGINT, SIGCHLD};
-use coreshift_core::error::errno;
 use coreshift_core::CoreError;
 use crate::binder_source::BinderForegroundSource;
 use crate::config::{Config, ResolverMode};
@@ -82,9 +81,6 @@ impl Daemon {
 
     pub fn run(&mut self) -> Result<(), CoreError> {
         let socket_addr = UnixSocketAddr::Abstract(self.config.socket_name.as_bytes());
-        if coreshift_core::unix_socket::connect_unix_stream(socket_addr).is_ok() {
-            return Err(CoreError::sys(errno::EADDRINUSE, "bind"));
-        }
 
         let mut reactor = Reactor::new()?;
 
