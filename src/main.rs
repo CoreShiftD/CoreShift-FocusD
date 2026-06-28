@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use coreshift_foreground::binder_source::BinderForegroundSource;
 use coreshift_foreground::blocklist::Blocklist;
 use coreshift_foreground::cache::UidCache;
 use coreshift_foreground::config::{Config, ResolverMode};
@@ -136,14 +137,22 @@ fn cmd_resolve(config: &Config, debug: bool) {
     let defaults  = Blocklist::resolve_defaults();
     let blocklist = Blocklist::load_or_create(&config.blocklist_path, defaults, false);
     let terminal  = TerminalApps::load_or_create(&format!("{}/terminal_apps.conf", config.cache_dir));
+    let blocklist_ref = blocklist.clone();
     let mut resolver = Resolver::new(cache, blocklist, terminal, launcher);
 
     if debug {
+        eprintln!("=== cgroup resolver ===");
         let (result, trace) = resolver.resolve_traced();
         for t in &trace {
             let mark = if t.pass { "✓" } else { "✗" };
             let pid_s = if t.pid != 0 { format!("[{}] ", t.pid) } else { String::new() };
             eprintln!("{mark} {}{}: {}", pid_s, t.stage, t.detail);
+        }
+        eprintln!("=== binder resolver ===");
+        let binder_trace = BinderForegroundSource::debug_trace(&blocklist_ref);
+        for t in &binder_trace {
+            let mark = if t.pass { "✓" } else { "✗" };
+            eprintln!("{mark} {}: {}", t.stage, t.detail);
         }
         match result {
             Some((pkg, is_app, _)) => println!("foreground: {pkg} (is_app={is_app})"),
