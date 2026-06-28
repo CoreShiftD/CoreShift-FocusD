@@ -8,7 +8,7 @@ use coreshift_core::reactor::{Reactor, Token, Fd};
 use coreshift_core::unix_socket::{bind_unix_listener, UnixSocketAddr, UnixSocketBindOptions, UnixStreamFd};
 use coreshift_core::inotify::{self, read_events};
 use coreshift_core::signal::{SignalRuntime, SignalfdSiginfo, SIGTERM, SIGINT, SIGCHLD};
-use coreshift_core::CoreError;
+use coreshift_core::{CoreError, log_info, log_warn, log_error};
 use crate::binder_source::BinderForegroundSource;
 use crate::config::{Config, ResolverMode};
 use crate::resolver::Resolver;
@@ -89,7 +89,9 @@ impl Daemon {
         let signal_fd = SignalRuntime::signalfd_new(&mask)?;
         let signal_token = reactor.add(&signal_fd, true, false)?;
 
-        let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())?;
+        let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())
+            .map_err(|e| { log_error!("fg:init", "bind @{}: {e}", self.config.socket_name); e })?;
+        log_info!("fg:init", "bound @{}", self.config.socket_name);
 
         let ready_file = format!("{}/daemon.ready", self.config.cache_dir);
         let _ = std::fs::write(ready_file, "");
@@ -98,8 +100,14 @@ impl Daemon {
 
         let (inotify_fd, inotify_token) = reactor.setup_inotify()?;
         let wd_packages      = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
-        let wd_blocklist     = inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK)?;
-        let wd_terminal_apps = inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK)?;
+        let wd_blocklist     = match inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK) {
+            Ok(wd) => Some(wd),
+            Err(e) => { log_warn!("fg:init", "blocklist watch: {e}"); None }
+        };
+        let wd_terminal_apps = match inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK) {
+            Ok(wd) => Some(wd),
+            Err(e) => { log_warn!("fg:init", "terminal_apps watch: {e}"); None }
+        };
         // Skip cgroup.procs watch when binder observer handles foreground events.
         let binder_drives_events = self.binder_efd.is_some();
         let wd_foreground = if !binder_drives_events {
@@ -157,7 +165,9 @@ impl Daemon {
                 } else if ev.token == inotify_token {
                     let in_events = read_events(&inotify_fd)?;
                     for in_ev in in_events {
-                        if in_ev.wd == wd_packages || in_ev.wd == wd_blocklist || in_ev.wd == wd_terminal_apps {
+                        if in_ev.wd == wd_packages
+                            || wd_blocklist.map_or(false, |wd| in_ev.wd == wd)
+                            || wd_terminal_apps.map_or(false, |wd| in_ev.wd == wd) {
                             refresh_needed = true;
                         }
                         if Some(in_ev.wd) == wd_foreground {
