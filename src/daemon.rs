@@ -99,7 +99,10 @@ impl Daemon {
         let socket_token = reactor.add(&listener.fd, true, false)?;
 
         let (inotify_fd, inotify_token) = reactor.setup_inotify()?;
-        let wd_packages      = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
+        let wd_packages      = match inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK) {
+            Ok(wd) => Some(wd),
+            Err(e) => { log_warn!("policy:fg:init", "packages.xml watch: {e} — cache will not auto-refresh on pkg changes"); None }
+        };
         let wd_blocklist     = match inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK) {
             Ok(wd) => Some(wd),
             Err(e) => { log_warn!("policy:fg:init", "blocklist watch: {e}"); None }
@@ -165,7 +168,7 @@ impl Daemon {
                 } else if ev.token == inotify_token {
                     let in_events = read_events(&inotify_fd)?;
                     for in_ev in in_events {
-                        if in_ev.wd == wd_packages
+                        if wd_packages.map_or(false, |wd| in_ev.wd == wd)
                             || wd_blocklist.map_or(false, |wd| in_ev.wd == wd)
                             || wd_terminal_apps.map_or(false, |wd| in_ev.wd == wd) {
                             refresh_needed = true;
