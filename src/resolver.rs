@@ -5,6 +5,13 @@
 use std::fs;
 use coreshift_core::proc::read_proc_cmdline;
 use coreshift_core::uid::proc_stat;
+
+pub struct TraceEntry {
+    pub pid:    i32,
+    pub stage:  &'static str,
+    pub detail: String,
+    pub pass:   bool,
+}
 use crate::cache::UidCache;
 use crate::blocklist::Blocklist;
 use crate::terminal_apps::TerminalApps;
@@ -208,6 +215,114 @@ impl Resolver {
         }
 
         None
+    }
+
+    /// Like resolve() but returns a trace of every step for --debug output.
+    pub fn resolve_traced(&mut self) -> (Option<(String, bool, Vec<std::path::PathBuf>)>, Vec<TraceEntry>) {
+        let mut trace: Vec<TraceEntry> = Vec::new();
+
+        let v1_path = "/dev/cpuset/top-app/cgroup.procs";
+        let v1_pids = match fs::read_to_string(v1_path) {
+            Ok(content) => {
+                let pids: Vec<i32> = content.lines()
+                    .filter_map(|l| l.trim().parse::<i32>().ok())
+                    .collect();
+                trace.push(TraceEntry {
+                    pid: 0, stage: "cgroup-v1",
+                    detail: format!("{v1_path}: {} pid(s): {:?}", pids.len(), &pids[..pids.len().min(8)]),
+                    pass: !pids.is_empty(),
+                });
+                pids
+            }
+            Err(e) => {
+                trace.push(TraceEntry { pid: 0, stage: "cgroup-v1",
+                    detail: format!("{v1_path}: {e}"), pass: false });
+                return (None, trace);
+            }
+        };
+
+        let mut v2_roots_note = String::new();
+        for root in &self.cgroup_v2_roots {
+            v2_roots_note.push_str(&format!("{} ", root.display()));
+        }
+        trace.push(TraceEntry { pid: 0, stage: "cgroup-v2-roots",
+            detail: v2_roots_note.trim().to_string(), pass: !self.cgroup_v2_roots.is_empty() });
+
+        let mut filtered: Vec<i32> = Vec::new();
+        for pid in &v1_pids {
+            let pid = *pid;
+            let cgroup_path = format!("/proc/{pid}/cgroup");
+            match fs::read_to_string(&cgroup_path) {
+                Err(e) => { trace.push(TraceEntry { pid, stage: "proc-cgroup",
+                    detail: format!("{cgroup_path}: {e}"), pass: false }); continue; }
+                Ok(content) => {
+                    let v2_rel = content.lines()
+                        .find(|l| l.starts_with("0::"))
+                        .and_then(|l| l.splitn(3, ':').nth(2))
+                        .map(|s| s.trim_start_matches('/').to_string())
+                        .unwrap_or_default();
+                    let mut found_root: Option<std::path::PathBuf> = None;
+                    for root in &self.cgroup_v2_roots {
+                        let p = root.join(&v2_rel);
+                        if p.exists() { found_root = Some(p); break; }
+                    }
+                    match found_root {
+                        None => {
+                            trace.push(TraceEntry { pid, stage: "cgroup-v2-path",
+                                detail: format!("no v2 path for rel={v2_rel:?}"), pass: false });
+                            continue;
+                        }
+                        Some(ref v2path) => {
+                            let events = v2path.join("cgroup.events");
+                            match fs::read_to_string(&events) {
+                                Err(e) => { trace.push(TraceEntry { pid, stage: "cgroup-v2-events",
+                                    detail: format!("{}: {e}", events.display()), pass: false }); continue; }
+                                Ok(ev) => {
+                                    let populated = ev.contains("populated 1");
+                                    trace.push(TraceEntry { pid, stage: "cgroup-v2-populated",
+                                        detail: format!("{}: populated={populated}", v2path.display()), pass: populated });
+                                    if !populated { continue; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            match proc_stat(pid) {
+                Err(e) => { trace.push(TraceEntry { pid, stage: "proc-stat",
+                    detail: format!("{e}"), pass: false }); continue; }
+                Ok(ref stat) => {
+                    let pkg = if stat.uid >= 10000 {
+                        self.cache.get_package(stat.uid).unwrap_or_default()
+                    } else {
+                        match read_proc_cmdline(pid) {
+                            Ok(ref c) => c.split('\0').next().unwrap_or("").trim().to_string(),
+                            Err(_) => String::new(),
+                        }
+                    };
+                    let blocked = self.blocklist.is_blocked(&pkg);
+                    trace.push(TraceEntry { pid, stage: "identity",
+                        detail: format!("uid={} pkg={:?} blocked={blocked}", stat.uid, pkg),
+                        pass: !blocked && !pkg.is_empty() });
+                    if !blocked && !pkg.is_empty() {
+                        filtered.push(pid);
+                    }
+                }
+            }
+        }
+
+        if filtered.is_empty() {
+            trace.push(TraceEntry { pid: 0, stage: "result",
+                detail: "filtered empty — no foreground resolved".into(), pass: false });
+            return (None, trace);
+        }
+
+        let result = self.resolve();
+        trace.push(TraceEntry { pid: 0, stage: "result",
+            detail: result.as_ref().map(|(p, _, _)| p.clone()).unwrap_or_else(|| "None".into()),
+            pass: result.is_some() });
+        (result, trace)
     }
 
     fn discover_cgroup_v2_roots() -> Vec<std::path::PathBuf> {

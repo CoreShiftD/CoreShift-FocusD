@@ -7,8 +7,12 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use coreshift_foreground::blocklist::Blocklist;
+use coreshift_foreground::cache::UidCache;
 use coreshift_foreground::config::{Config, ResolverMode};
 use coreshift_foreground::daemon::Daemon;
+use coreshift_foreground::resolver::Resolver;
+use coreshift_foreground::terminal_apps::TerminalApps;
 use coreshift_core::unix_socket::{connect_unix_stream, connect_unix_stream_named, UnixSocketAddr, UnixConnectResult};
 use coreshift_core::reactor::Reactor;
 use coreshift_core::spawn::{Process, ExitStatus};
@@ -73,6 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             run_supervisor(&config)?;
         }
+        "resolve" => {
+            let debug = args.iter().any(|a| a == "--debug");
+            cmd_resolve(&config, debug);
+        }
         _ => {
             print_usage();
         }
@@ -121,6 +129,34 @@ fn send_command(socket_name: &str, cmd: &str) -> Result<(), Box<dyn std::error::
     }
 }
 
+fn cmd_resolve(config: &Config, debug: bool) {
+    let mut cache = UidCache::new(&config.cache_dir);
+    cache.load_or_refresh(&config.packages_xml_path);
+    let launcher  = Blocklist::resolve_launcher();
+    let defaults  = Blocklist::resolve_defaults();
+    let blocklist = Blocklist::load_or_create(&config.blocklist_path, defaults, false);
+    let terminal  = TerminalApps::load_or_create(&format!("{}/terminal_apps.conf", config.cache_dir));
+    let mut resolver = Resolver::new(cache, blocklist, terminal, launcher);
+
+    if debug {
+        let (result, trace) = resolver.resolve_traced();
+        for t in &trace {
+            let mark = if t.pass { "✓" } else { "✗" };
+            let pid_s = if t.pid != 0 { format!("[{}] ", t.pid) } else { String::new() };
+            eprintln!("{mark} {}{}: {}", pid_s, t.stage, t.detail);
+        }
+        match result {
+            Some((pkg, is_app, _)) => println!("foreground: {pkg} (is_app={is_app})"),
+            None => println!("foreground: unknown"),
+        }
+    } else {
+        match resolver.resolve() {
+            Some((pkg, _, _)) => println!("{pkg}"),
+            None => println!("unknown"),
+        }
+    }
+}
+
 fn print_usage() {
     println!("Usage: coreshift-foreground <command> [options]");
     println!("Commands:");
@@ -130,6 +166,8 @@ fn print_usage() {
     println!("  restart  Restart the daemon");
     println!("  status   Show current foreground package");
     println!("  watch    Watch for foreground changes");
+    println!("  resolve [--debug]");
+    println!("           Resolve foreground package directly (no daemon). --debug traces each step");
 }
 
 fn run_supervisor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
