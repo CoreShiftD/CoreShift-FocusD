@@ -90,8 +90,8 @@ impl Daemon {
         let signal_token = reactor.add(&signal_fd, true, false)?;
 
         let listener = bind_unix_listener(socket_addr, UnixSocketBindOptions::default())
-            .map_err(|e| { log_error!("fg:init", "bind @{}: {e}", self.config.socket_name); e })?;
-        log_info!("fg:init", "bound @{}", self.config.socket_name);
+            .map_err(|e| { log_error!("policy:fg:init", "bind @{}: {e}", self.config.socket_name); e })?;
+        log_info!("policy:fg:init", "bound @{}", self.config.socket_name);
 
         let ready_file = format!("{}/daemon.ready", self.config.cache_dir);
         let _ = std::fs::write(ready_file, "");
@@ -102,11 +102,11 @@ impl Daemon {
         let wd_packages      = inotify::add_watch(&inotify_fd, &self.config.packages_xml_path, inotify::MODIFY_MASK)?;
         let wd_blocklist     = match inotify::add_watch(&inotify_fd, &self.config.blocklist_path, inotify::MODIFY_MASK) {
             Ok(wd) => Some(wd),
-            Err(e) => { log_warn!("fg:init", "blocklist watch: {e}"); None }
+            Err(e) => { log_warn!("policy:fg:init", "blocklist watch: {e}"); None }
         };
         let wd_terminal_apps = match inotify::add_watch(&inotify_fd, &self.terminal_apps_path, inotify::MODIFY_MASK) {
             Ok(wd) => Some(wd),
-            Err(e) => { log_warn!("fg:init", "terminal_apps watch: {e}"); None }
+            Err(e) => { log_warn!("policy:fg:init", "terminal_apps watch: {e}"); None }
         };
         // Skip cgroup.procs watch when binder observer handles foreground events.
         let binder_drives_events = self.binder_efd.is_some();
