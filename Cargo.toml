@@ -1,6 +1,6 @@
 [package]
 name = "coreshift-foreground"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Android foreground package resolution daemon and CLI"
 license = "MPL-2.0"
@@ -11,4 +11,4 @@ keywords = ["android", "foreground", "cgroup", "binder", "daemon"]
 categories = ["os::linux-apis"]
 
 [dependencies]
-coreshift-core = "1.2.13"
+coreshift-core = "1.2.20"

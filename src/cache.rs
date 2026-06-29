@@ -30,6 +30,7 @@ pub struct UidCache {
     pub fingerprint: Option<Fingerprint>,
     cache_file: PathBuf,
     miss_counts: HashMap<u32, u8>,
+    last_miss_refresh: Option<std::time::Instant>,
 }
 
 fn run_command(cmd: &str, args: &[&str]) -> Result<Output, CoreError> {
@@ -50,6 +51,7 @@ impl UidCache {
             fingerprint: None,
             cache_file,
             miss_counts: HashMap::new(),
+            last_miss_refresh: None,
         }
     }
 
@@ -92,8 +94,15 @@ impl UidCache {
             }
         }
 
-        // Missing UID: refresh and try again
+        // Missing UID: refresh at most once per 30 s to avoid cmd spam
+        let now = std::time::Instant::now();
+        let stale = self.last_miss_refresh
+            .map_or(true, |t| now.duration_since(t).as_secs() >= 30);
+        if !stale {
+            return None;
+        }
         self.refresh();
+        self.last_miss_refresh = Some(now);
         self.save();
 
         if let Some(pkg) = self.mapping.get(&uid) {

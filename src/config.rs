@@ -29,6 +29,7 @@ pub struct Config {
     pub cache_dir: String,
     pub blocklist_path: String,
     pub packages_xml_path: String,
+    pub settings_secure_path: String,
     pub socket_name: String,
     pub resolver_mode: ResolverMode,
     /// If set, daemon drops to this UID after binding the socket.
@@ -41,6 +42,7 @@ impl Default for Config {
             cache_dir: "/data/local/tmp/coreshift/".to_string(),
             blocklist_path: "/data/local/tmp/coreshift/blocklist.conf".to_string(),
             packages_xml_path: "/data/system/packages.xml".to_string(),
+            settings_secure_path: "/data/system/users/0/settings_secure.xml".to_string(),
             socket_name: "coreshift".to_string(),
             resolver_mode: ResolverMode::Auto,
             daemon_uid: None,
@@ -61,7 +63,8 @@ impl Config {
                     match key.trim() {
                         "cache_dir"           => config.cache_dir = value.trim().to_string(),
                         "blocklist_path"      => config.blocklist_path = value.trim().to_string(),
-                        "packages_xml_path"   => config.packages_xml_path = value.trim().to_string(),
+                        "packages_xml_path"    => config.packages_xml_path = value.trim().to_string(),
+                        "settings_secure_path" => config.settings_secure_path = value.trim().to_string(),
                         "socket_name"         => config.socket_name = value.trim().to_string(),
                         "resolver"   => {
                             if let Some(m) = ResolverMode::from_str(value.trim()) {

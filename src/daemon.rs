@@ -36,6 +36,7 @@ pub struct Daemon {
     last_package: Option<String>,
     blocklist_defaults: std::collections::BTreeSet<String>,
     terminal_apps_path: String,
+    settings_secure_fingerprint: Option<crate::cache::Fingerprint>,
 }
 
 impl Daemon {
@@ -76,6 +77,7 @@ impl Daemon {
             last_package: None,
             blocklist_defaults,
             terminal_apps_path,
+            settings_secure_fingerprint: None,
         }
     }
 
@@ -111,6 +113,16 @@ impl Daemon {
             Ok(wd) => Some(wd),
             Err(e) => { log_warn!("policy:fg:init", "terminal_apps watch: {e}"); None }
         };
+        // settings_secure.xml inotify: only re-run resolve_defaults() when IME/a11y settings change.
+        // Degrades to fingerprint-based stat check if inotify is denied.
+        let wd_settings_secure = match inotify::add_watch(&inotify_fd, &self.config.settings_secure_path, inotify::MODIFY_MASK) {
+            Ok(wd) => Some(wd),
+            Err(e) => { log_warn!("policy:fg:init", "settings_secure watch: {e} — degrading to stat"); None }
+        };
+        // Seed stat fingerprint for fallback path
+        if wd_settings_secure.is_none() {
+            self.settings_secure_fingerprint = crate::cache::Fingerprint::collect(&self.config.settings_secure_path);
+        }
         // Skip cgroup.procs watch when binder observer handles foreground events.
         let binder_drives_events = self.binder_efd.is_some();
         let wd_foreground = if !binder_drives_events {
@@ -132,6 +144,7 @@ impl Daemon {
             let mut refresh_needed = false;
             let mut notify_needed  = false;
             let mut binder_event   = false;
+            let mut settings_dirty = false;
 
             for ev in &events {
                 if ev.token == socket_token {
@@ -172,6 +185,9 @@ impl Daemon {
                             || wd_blocklist.map_or(false, |wd| in_ev.wd == wd)
                             || wd_terminal_apps.map_or(false, |wd| in_ev.wd == wd) {
                             refresh_needed = true;
+                        }
+                        if wd_settings_secure.map_or(false, |wd| in_ev.wd == wd) {
+                            settings_dirty = true;
                         }
                         if Some(in_ev.wd) == wd_foreground {
                             notify_needed = true;
@@ -248,13 +264,24 @@ impl Daemon {
                 let old_fp = self.resolver.cache.fingerprint.clone();
                 self.resolver.cache.load_or_refresh(&self.config.packages_xml_path);
 
-                let mut dynamic_changed = false;
-                if self.resolver.cache.fingerprint != old_fp {
-                    self.blocklist_defaults = Blocklist::resolve_defaults();
-                    dynamic_changed = true;
+                // Stat-based fallback: check settings_secure fingerprint when inotify watch is absent
+                if !settings_dirty && wd_settings_secure.is_none() && self.resolver.cache.fingerprint != old_fp {
+                    let new_fp = crate::cache::Fingerprint::collect(&self.config.settings_secure_path);
+                    if new_fp != self.settings_secure_fingerprint {
+                        settings_dirty = true;
+                        self.settings_secure_fingerprint = new_fp;
+                    }
                 }
 
-                self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone(), dynamic_changed);
+                if settings_dirty {
+                    self.blocklist_defaults = Blocklist::resolve_defaults();
+                    if wd_settings_secure.is_some() {
+                        self.settings_secure_fingerprint =
+                            crate::cache::Fingerprint::collect(&self.config.settings_secure_path);
+                    }
+                }
+
+                self.resolver.blocklist = Blocklist::load_or_create(&self.config.blocklist_path, self.blocklist_defaults.clone(), settings_dirty);
                 self.resolver.terminal_apps = TerminalApps::load_or_create(&self.terminal_apps_path);
             }
 
